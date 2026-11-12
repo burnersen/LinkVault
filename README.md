@@ -20,6 +20,8 @@ Eine Lesezeichen-Verwaltung zum Selbsthosten in **einer einzigen PHP-Datei**. Ke
 - Mehrere Benutzer, jeder mit eigenem Schlüssel und eigenem, getrenntem Bereich
 - Zwei-Faktor-Anmeldung (TOTP), Wiederherstellungscode, Anmelde-Protokoll
 - Als App installierbar (PWA), läuft ohne CDN (Schrift und CSS sind eingebettet)
+- Heller und dunkler Modus mit je drei Farbvarianten (Violett, Blau, Grün), auf Wunsch automatisch nach Geräte-Einstellung
+- Oberfläche auf Deutsch und Englisch, umschaltbar unter Werkzeuge → Design & Sprache (die Wahl merkt sich der Browser)
 
 ## Voraussetzungen
 

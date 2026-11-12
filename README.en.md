@@ -22,6 +22,8 @@ Upload `index.php`, open it in the browser, create the first account. That's the
 - Multiple users, each with their own key and their own separate vault
 - Two-factor login (TOTP), recovery code, login history
 - Installable as a PWA, works without any CDN (font and CSS are embedded)
+- Light and dark mode with three colour variants each (violet, blue, green), optionally following the device setting
+- Interface in German and English, switchable under Tools → Appearance & language (the choice is remembered by the browser)
 
 ## Requirements
 
