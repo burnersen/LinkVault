@@ -23,7 +23,7 @@ error_reporting(E_ALL);
 ini_set('display_errors', 0);
 date_default_timezone_set('Europe/Berlin');
 
-define('LV_VERSION', '3.3.0');
+define('LV_VERSION', '3.3.1');
 define('LV_DATA_DIR', __DIR__ . '/data');
 define('USERS_DIR', LV_DATA_DIR . '/users');       // weitere Benutzer: jeder hat hier seinen eigenen Ordner
 define('SESSION_DIR', LV_DATA_DIR . '/sessions');
@@ -4143,8 +4143,9 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
 
     // Einstellungen dieses Geräts (nur Ansicht, nichts Geheimes)
     const store = {
-        get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch (_) { return d; } },
-        set(k, v) { try { localStorage.setItem(k, v); } catch (_) {} }
+        // Läuft über lvUi (Block am Dateiende), damit Änderungen auch am Konto gespeichert werden
+        get(k, d) { try { const v = window.lvUi ? window.lvUi.get(k) : localStorage.getItem(k); return (v === null || v === undefined) ? d : v; } catch (_) { return d; } },
+        set(k, v) { try { if (window.lvUi) window.lvUi.put(k, v); else localStorage.setItem(k, v); } catch (_) {} }
     };
     const oneOf = (v, list, d) => list.includes(v) ? v : d;
     let currentCategory = store.get('lv_cat', 'all');
@@ -4209,6 +4210,16 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
     function getDomain(url) {
         try { return new URL(url).hostname.replace(/^www\./, ''); }
         catch (_) { return url || ''; }
+    }
+    // Für die Anzeige auf der Karte: Adresse ohne „https://“ und „www.“, damit man Links derselben Seite auseinanderhält
+    function shortUrl(url) {
+        try {
+            const u = new URL(url);
+            if (!u.hostname) return url || '';
+            let rest = (u.pathname + u.search + u.hash).replace(/\/$/, '');
+            try { rest = decodeURI(rest); } catch (_) {}
+            return u.hostname.replace(/^www\./, '') + rest;
+        } catch (_) { return url || ''; }
     }
     // Ersatz-Icon mit dem Anfangsbuchstaben, falls eine Seite kein eigenes Icon hat
     function letterIcon(ch) {
@@ -4553,7 +4564,7 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
                 <img src="${escapeHtml(faviconSrc(domain))}" data-letter="${escapeHtml((domain || '?')[0])}" alt="" class="favicon" loading="lazy" draggable="false">
                 <div class="bm-text">
                     ${titleHtml}
-                    <span class="bm-domain">${escapeHtml(domain)}</span>
+                    <span class="bm-domain" title="${escapeHtml(bm.url)}">${escapeHtml(shortUrl(bm.url))}</span>
                     ${bm.description ? `<p class="bm-desc">${escapeHtml(bm.description)}</p>` : ''}
                     <div class="bm-meta"><span class="bm-chip">${escapeHtml(prettyCat(bm.category))}</span>${tags}${warn}</div>
                 </div>
@@ -6088,8 +6099,10 @@ function lvUiHead(): void {
         try { return localStorage.getItem(k); } catch (e) { return null; }
     };
     var put = function (k, v) {
+        v = String(v);
         mem[k] = v;
         try { if (v === '') localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) {}
+        if (window.lvUi && window.lvUi.onPut) window.lvUi.onPut(k);
     };
     // Am Konto gespeicherte Einstellungen gelten vor dem, was dieser Browser sich gemerkt hat
     var SRV = (window.LV_UI_SERVER && typeof window.LV_UI_SERVER === 'object') ? window.LV_UI_SERVER : null;
@@ -6446,25 +6459,39 @@ function lvUiFoot(): void {
         return JSON.stringify(o);
     };
     var sent = snap(ui.server || DEF);
-    // Schickt den Stand nur, wenn er sich vom zuletzt gespeicherten unterscheidet
-    function push() {
+    // Schickt den Stand nur, wenn er sich vom zuletzt gespeicherten unterscheidet.
+    // keep = true: Die Seite wird gerade verlassen, die Anfrage soll trotzdem noch rausgehen.
+    var pushTimer = 0;
+    function push(keep) {
+        clearTimeout(pushTimer);
         if (!csrfEl) return Promise.resolve();
         var now = snap(), before = sent;
         if (now === sent) return Promise.resolve();
         sent = now;
         var fd = new FormData();
         fd.append('action', 'ui_save'); fd.append('csrf', csrfEl.value); fd.append('ui', now);
-        return fetch('', { method: 'POST', body: fd, credentials: 'same-origin', headers: { 'X-CSRF-Token': csrfEl.value } })
+        if (keep && navigator.sendBeacon) {
+            // Der Browser schickt das auch dann noch ab, wenn die Seite schon weg ist
+            try { if (navigator.sendBeacon(location.pathname, fd)) return Promise.resolve(); } catch (e) {}
+        }
+        // keepalive: Die Anfrage läuft zu Ende, auch wenn gleich danach neu geladen oder die Seite geschlossen wird
+        var opts = { method: 'POST', body: fd, credentials: 'same-origin', keepalive: true, headers: { 'X-CSRF-Token': csrfEl.value } };
+        return fetch('', opts)
             .then(function (r) { return r.json(); })
             .then(function (j) { if (!j || !j.success) sent = before; })
             .catch(function () { sent = before; });
     }
     if (csrfEl) {
-        // Ansicht, Sortierung usw. ändert die App selbst: nach jedem Klick oder Tastendruck kurz nachsehen
-        var pushTimer = 0;
-        var later = function () { clearTimeout(pushTimer); pushTimer = setTimeout(push, 400); };
-        doc.addEventListener('click', later, true);
-        doc.addEventListener('keyup', later, true);
+        // Jede Änderung an einer der Einstellungen (auch Ansicht, Sortierung, Gruppierung in der App) stößt das Speichern an
+        var uiKeys = {};
+        for (var uk in ui.keys) uiKeys[ui.keys[uk]] = 1;
+        ui.onPut = function (k) {
+            // Sofort losschicken, ohne Wartezeit: so ist es auch dann gespeichert, wenn gleich danach neu geladen wird
+            if (uiKeys[k]) push();
+        };
+        // Seite wird geschlossen oder neu geladen, bevor gespeichert wurde: jetzt noch schnell nachholen
+        window.addEventListener('pagehide', function () { push(true); });
+        doc.addEventListener('visibilitychange', function () { if (doc.visibilityState === 'hidden') push(true); });
         // Konto hatte noch nichts gespeichert, der Browser aber schon: einmalig übernehmen
         push();
     }
