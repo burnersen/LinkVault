@@ -3076,6 +3076,11 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
             box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.25);
             background: linear-gradient(155deg, rgba(30, 41, 59, 0.9), rgba(76, 29, 149, 0.15));
         }
+        /* Zuletzt geöffneter Eintrag: Rahmen aussen herum, damit man die Stelle wiederfindet */
+        .bookmark-card.last-opened {
+            outline: 2px solid #a78bfa; outline-offset: 1px;
+            box-shadow: 0 0 14px -2px rgba(139, 92, 246, 0.55);
+        }
 
         .favicon {
             width: 28px; height: 28px; border-radius: 7px; object-fit: contain;
@@ -4247,7 +4252,17 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
             return (host + path + (p.search || '')).toLowerCase();
         } catch (_) { return (u || '').toLowerCase(); }
     }
+    // Merkt sich den zuletzt geöffneten Eintrag (nur für diesen Tab) und hebt ihn hervor
+    let lastOpened = '';
+    try { lastOpened = sessionStorage.getItem('lv_last_opened') || ''; } catch (_) {}
+    function markOpened(id) {
+        lastOpened = String(id);
+        try { sessionStorage.setItem('lv_last_opened', lastOpened); } catch (_) {}
+        document.querySelectorAll('.bookmark-card.last-opened').forEach(c => c.classList.remove('last-opened'));
+        document.querySelectorAll('.bookmark-card').forEach(c => { if (c.dataset.id === lastOpened) c.classList.add('last-opened'); });
+    }
     function trackVisit(bm) {
+        markOpened(bm.id);
         bm.clicks = (bm.clicks || 0) + 1;
         bm.opened = Math.floor(Date.now() / 1000);
         api('visit', { id: bm.id });
@@ -4526,7 +4541,7 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
         const card = document.createElement('article');
         const isSelected = selected.has(bm.id);
         const domain = getDomain(bm.url);
-        card.className = `bookmark-card glass rounded-xl ${bm.favorite ? 'favorite' : ''} ${isSelected ? 'selected' : ''}`;
+        card.className = `bookmark-card glass rounded-xl ${bm.favorite ? 'favorite' : ''} ${isSelected ? 'selected' : ''} ${String(bm.id) === lastOpened ? 'last-opened' : ''}`;
         card.dataset.id = bm.id;
         if (canDrag) card.draggable = true;
 
@@ -6179,6 +6194,7 @@ html.lvt .bookmark-card.selected {
     border-color: rgb(var(--lv-ar) / 0.8) !important; box-shadow: 0 0 0 2px rgb(var(--lv-ar) / 0.3);
     background: linear-gradient(155deg, var(--lv-card), rgb(var(--lv-ar) / 0.14));
 }
+html.lvt .bookmark-card.last-opened { outline-color: var(--lv-a); box-shadow: 0 0 14px -2px rgb(var(--lv-ar) / 0.6); }
 html[data-lvt^="l"] .bookmark-card { box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06); }
 html.lvt .favicon { background: var(--lv-group); }
 html.lvt .sel-check { border-color: var(--lv-t4); }
