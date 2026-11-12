@@ -21,7 +21,7 @@ Eine Lesezeichen-Verwaltung zum Selbsthosten in **einer einzigen PHP-Datei**. Ke
 - Zwei-Faktor-Anmeldung (TOTP), Wiederherstellungscode, Anmelde-Protokoll
 - Als App installierbar (PWA), läuft ohne CDN (Schrift und CSS sind eingebettet)
 - Heller und dunkler Modus mit je drei Farbvarianten (Violett, Blau, Grün), auf Wunsch automatisch nach Geräte-Einstellung
-- Oberfläche auf Deutsch und Englisch, umschaltbar unter Werkzeuge → Design & Sprache (die Wahl merkt sich der Browser)
+- Oberfläche auf Deutsch und Englisch, umschaltbar unter Werkzeuge → Design & Sprache (jeder Benutzer hat seine eigenen Einstellungen, sie werden an seinem Konto gespeichert und gelten auf jedem Gerät)
 
 ## Voraussetzungen
 
@@ -92,6 +92,7 @@ zufälliger 256-Bit-Datenschlüssel (DEK) ◀──mit AES-256-GCM ausgepackt─
 | `data/bookmarks.json`, `data/users/<id>/bookmarks.json` | Lesezeichen | Nein (AES-256-GCM) |
 | `…/backups/*.json` | ältere Stände davon | Nein (AES-256-GCM) |
 | `data/lv_auth.json`, `…/auth.json` | Benutzername, Passwort-Hash (`password_hash`, bcrypt), Salt, verpackter Datenschlüssel, verschlüsseltes TOTP-Geheimnis, Einstellungen | Benutzername und Einstellungen ja, alles Geheime nein |
+| `data/ui.json`, `…/ui.json` | Einstellungen der Oberfläche je Benutzer: Design, Sprache, Ansicht, Sortierung | Ja (nichts Geheimes) |
 | `…/state.json` | Stand des Kontos (wartet / aktiv / gesperrt), Zeitpunkte, verschlossene Nachricht der Anfrage | Stand und Zeitpunkte ja |
 | `…/attempts.log` | Anmelde-Protokoll: Zeit, IP-Adresse, versuchter Name | Nein, sofern `sodium` vorhanden ist (siehe unten) |
 | `…/favicon_cache/` | Icons der Seiten | Nein (AES-256-GCM). Die Dateinamen sind mit dem Schlüssel gebildete Prüfsummen (HMAC) und verraten die Domain nicht. |

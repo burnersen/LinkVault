@@ -23,7 +23,7 @@ Upload `index.php`, open it in the browser, create the first account. That's the
 - Two-factor login (TOTP), recovery code, login history
 - Installable as a PWA, works without any CDN (font and CSS are embedded)
 - Light and dark mode with three colour variants each (violet, blue, green), optionally following the device setting
-- Interface in German and English, switchable under Tools → Appearance & language (the choice is remembered by the browser)
+- Interface in German and English, switchable under Tools → Appearance & language (every user has their own settings, stored with their account and applied on every device)
 
 ## Requirements
 
@@ -94,6 +94,7 @@ random 256-bit data key (DEK) ◀──unwrapped with AES-256-GCM─────
 | `data/bookmarks.json`, `data/users/<id>/bookmarks.json` | bookmarks | No (AES-256-GCM) |
 | `…/backups/*.json` | snapshots of the above | No (AES-256-GCM) |
 | `data/lv_auth.json`, `…/auth.json` | user name, password hash (`password_hash`, bcrypt), salt, wrapped data key, encrypted TOTP secret, settings | User name and settings yes, everything secret no |
+| `data/ui.json`, `…/ui.json` | per-user interface settings: colour scheme, language, layout, sorting | Yes (nothing secret) |
 | `…/state.json` | account status (pending / active / blocked), timestamps, sealed registration note | Status and timestamps yes |
 | `…/attempts.log` | login history: time, IP address, attempted name | No, if `sodium` is available (see below) |
 | `…/favicon_cache/` | site icons | No (AES-256-GCM). File names are keyed HMACs, so they don't reveal the domain. |

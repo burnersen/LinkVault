@@ -23,7 +23,7 @@ error_reporting(E_ALL);
 ini_set('display_errors', 0);
 date_default_timezone_set('Europe/Berlin');
 
-define('LV_VERSION', '3.2.0');
+define('LV_VERSION', '3.3.1');
 define('LV_DATA_DIR', __DIR__ . '/data');
 define('USERS_DIR', LV_DATA_DIR . '/users');       // weitere Benutzer: jeder hat hier seinen eigenen Ordner
 define('SESSION_DIR', LV_DATA_DIR . '/sessions');
@@ -2056,6 +2056,12 @@ if ($action) {
                 setcookie(LV_KEY_COOKIE, (string)($_COOKIE[LV_KEY_COOKIE] ?? ''), lvCookieOpts($exp));
                 setcookie(session_name(), session_id(), lvCookieOpts($exp));
                 jsonOut(['success' => true, 'message' => 'Gespeichert.']);
+
+            // Design, Sprache und Ansicht des angemeldeten Benutzers (siehe Block „Neu in 3.2/3.3“ am Dateiende)
+            case 'ui_save':
+                $ui = json_decode((string)($_POST['ui'] ?? ''), true);
+                if (!is_array($ui) || !lvUiSave(lvUiClean($ui))) throw new Exception('Speichern fehlgeschlagen (Schreibrechte?).');
+                jsonOut(['success' => true]);
 
             case 'change_password':
                 $newUser = trim((string)($_POST['new_username'] ?? ''));
@@ -4142,8 +4148,9 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
 
     // Einstellungen dieses Geräts (nur Ansicht, nichts Geheimes)
     const store = {
-        get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch (_) { return d; } },
-        set(k, v) { try { localStorage.setItem(k, v); } catch (_) {} }
+        // Läuft über lvUi (Block am Dateiende), damit Änderungen auch am Konto gespeichert werden
+        get(k, d) { try { const v = window.lvUi ? window.lvUi.get(k) : localStorage.getItem(k); return (v === null || v === undefined) ? d : v; } catch (_) { return d; } },
+        set(k, v) { try { if (window.lvUi) window.lvUi.put(k, v); else localStorage.setItem(k, v); } catch (_) {} }
     };
     const oneOf = (v, list, d) => list.includes(v) ? v : d;
     let currentCategory = store.get('lv_cat', 'all');
@@ -4208,6 +4215,16 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
     function getDomain(url) {
         try { return new URL(url).hostname.replace(/^www\./, ''); }
         catch (_) { return url || ''; }
+    }
+    // Für die Anzeige auf der Karte: Adresse ohne „https://“ und „www.“, damit man Links derselben Seite auseinanderhält
+    function shortUrl(url) {
+        try {
+            const u = new URL(url);
+            if (!u.hostname) return url || '';
+            let rest = (u.pathname + u.search + u.hash).replace(/\/$/, '');
+            try { rest = decodeURI(rest); } catch (_) {}
+            return u.hostname.replace(/^www\./, '') + rest;
+        } catch (_) { return url || ''; }
     }
     // Ersatz-Icon mit dem Anfangsbuchstaben, falls eine Seite kein eigenes Icon hat
     function letterIcon(ch) {
@@ -4562,7 +4579,7 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
                 <img src="${escapeHtml(faviconSrc(domain))}" data-letter="${escapeHtml((domain || '?')[0])}" alt="" class="favicon" loading="lazy" draggable="false">
                 <div class="bm-text">
                     ${titleHtml}
-                    <span class="bm-domain">${escapeHtml(domain)}</span>
+                    <span class="bm-domain" title="${escapeHtml(bm.url)}">${escapeHtml(shortUrl(bm.url))}</span>
                     ${bm.description ? `<p class="bm-desc">${escapeHtml(bm.description)}</p>` : ''}
                     <div class="bm-meta"><span class="bm-chip">${escapeHtml(prettyCat(bm.category))}</span>${tags}${warn}</div>
                 </div>
@@ -6026,7 +6043,7 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
      Alle anderen Schemata überschreiben nur Farben (html.lvt …).
    - Sprache: Deutsch bleibt die Grundlage im Code. Für Englisch werden
      die sichtbaren Texte im Browser anhand der Tabelle unten ersetzt.
-   Die Wahl merkt sich der Browser (localStorage), nicht das Konto.
+   Die Wahl wird am Konto gespeichert (ui.json, seit 3.3), der Browser behält eine Kopie.
    ===================================================================== */
 
 /** Für die wenigen Stellen ohne Browser-Skript (App-Manifest): Will der Browser lieber Englisch? */
@@ -6035,14 +6052,76 @@ function lvBrowserEnglish(): bool {
     return $al !== '' && strncmp($al, 'de', 2) !== 0;
 }
 
+/* ----- Neu in 3.3: Die Einstellungen liegen zusätzlich am Konto -----
+   Jeder Benutzer hat in seinem eigenen Ordner eine ui.json (Design, Sprache, Ansicht).
+   Bewusst eine eigene Datei: auth.json mit dem Schlüssel wird dafür nie angefasst.
+   Der Browser behält eine Kopie, damit auch die Anmeldeseite passend aussieht. */
+function lvUiOptions(): array {
+    return [
+    'mode' => ['auto', 'light', 'dark'], 'light' => ['1', '2', '3'], 'dark' => ['1', '2', '3'], 'lang' => ['', 'de', 'en'],
+    'view' => ['cards', 'list', 'compact'],
+    'sort' => ['title', 'title-desc', 'newest', 'oldest', 'clicks', 'opened', 'domain', 'folder'],
+    'group' => ['domain', 'folder', 'none'], 'favtop' => ['1', '0'],
+    ];
+}
+
+/** Lässt nur bekannte Werte durch, alles andere fällt auf den Standard (erster Eintrag) zurück. */
+function lvUiClean($in): array {
+    $out = [];
+    foreach (lvUiOptions() as $k => $allowed) {
+        $v = (is_array($in) && isset($in[$k]) && is_scalar($in[$k])) ? (string)$in[$k] : '';
+        $out[$k] = in_array($v, $allowed, true) ? $v : $allowed[0];
+    }
+    return $out;
+}
+
+function lvUiFile(): string { return lvUserDir() . '/ui.json'; }
+
+/** @return array|null null = für dieses Konto ist noch nichts gespeichert */
+function lvUiLoad(): ?array {
+    $raw = @file_get_contents(lvUiFile());
+    $data = is_string($raw) ? json_decode($raw, true) : null;
+    return is_array($data) ? lvUiClean($data) : null;
+}
+
+function lvUiSave(array $ui): bool {
+    $dir = lvUserDir();
+    if (!is_dir($dir)) return false;
+    $json = json_encode($ui);
+    if ($json === false) return false;
+    $file = lvUiFile();
+    $tmp = $file . '.tmp.' . bin2hex(random_bytes(4));
+    if (@file_put_contents($tmp, $json, LOCK_EX) === false) { @unlink($tmp); return false; }
+    if (!@rename($tmp, $file)) { @unlink($tmp); return false; }
+    return true;
+}
+
 /** Gehört in den <head>, nach den eigenen Styles der Seite. */
 function lvUiHead(): void {
     global $LV_NONCE;
+    // Nur wer angemeldet ist, bekommt seine gespeicherten Einstellungen mit (auf der Anmeldeseite: null)
+    $ui = (LV_AUTH_ENABLED && lvIsLoggedIn() && lvLoadAuthConfig() !== null) ? lvUiLoad() : null;
     echo '<script nonce="' . htmlspecialchars((string)$LV_NONCE, ENT_QUOTES, 'UTF-8') . '">';
+    echo 'window.LV_UI_SERVER = ' . (json_encode($ui, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?: 'null') . ";\n";
     echo <<<'LVJS'
 (function () {
     var d = document.documentElement;
-    var get = function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } };
+    // Reihenfolge wie in lvUiOptions() (PHP)
+    var KEYS = { mode: 'lv_mode', light: 'lv_light', dark: 'lv_dark', lang: 'lv_lang', view: 'lv_view', sort: 'lv_sort', group: 'lv_group', favtop: 'lv_favtop' };
+    var mem = {};   // Ersatz, falls der Browser nichts speichern darf
+    var get = function (k) {
+        if (Object.prototype.hasOwnProperty.call(mem, k)) return mem[k];
+        try { return localStorage.getItem(k); } catch (e) { return null; }
+    };
+    var put = function (k, v) {
+        v = String(v);
+        mem[k] = v;
+        try { if (v === '') localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) {}
+        if (window.lvUi && window.lvUi.onPut) window.lvUi.onPut(k);
+    };
+    // Am Konto gespeicherte Einstellungen gelten vor dem, was dieser Browser sich gemerkt hat
+    var SRV = (window.LV_UI_SERVER && typeof window.LV_UI_SERVER === 'object') ? window.LV_UI_SERVER : null;
+    if (SRV) { for (var sk in KEYS) { if (typeof SRV[sk] === 'string') put(KEYS[sk], SRV[sk]); } }
     var mq = window.matchMedia ? window.matchMedia('(prefers-color-scheme: light)') : null;
     var BAR = { d1: '#0b1120', d2: '#07131f', d3: '#0a0a0a', l1: '#ffffff', l2: '#ffffff', l3: '#fdfcf9' };
     function state() {
@@ -6071,7 +6150,7 @@ function lvUiHead(): void {
         d.classList.add('lv-wait');
         setTimeout(function () { d.classList.remove('lv-wait'); }, 2500);
     }
-    window.lvUi = { state: state, apply: apply, lang: lang };
+    window.lvUi = { state: state, apply: apply, lang: lang, get: get, put: put, keys: KEYS, server: SRV };
     apply();
     if (mq) {
         var onChange = function () { apply(); if (window.lvUi.onTheme) window.lvUi.onTheme(); };
@@ -6382,7 +6461,56 @@ function lvUiFoot(): void {
     var ui = window.lvUi;
     if (!ui) return;
     var doc = document, root = doc.documentElement;
-    var set = function (k, v) { try { localStorage.setItem(k, v); } catch (e) {} };
+    var set = ui.put;
+
+    /* ----- Einstellungen am Konto speichern (nur in der App, nicht auf der Anmeldeseite) ----- */
+    var csrfEl = doc.getElementById('exportCsrf');
+    var DEF = { mode: 'auto', light: '1', dark: '1', lang: '', view: 'cards', sort: 'title', group: 'domain', favtop: '1' };
+    var snap = function (src) {
+        var o = {};
+        for (var k in ui.keys) {
+            var v = src ? src[k] : ui.get(ui.keys[k]);
+            o[k] = (v === null || v === undefined) ? DEF[k] : String(v);
+        }
+        return JSON.stringify(o);
+    };
+    var sent = snap(ui.server || DEF);
+    // Schickt den Stand nur, wenn er sich vom zuletzt gespeicherten unterscheidet.
+    // keep = true: Die Seite wird gerade verlassen, die Anfrage soll trotzdem noch rausgehen.
+    var pushTimer = 0;
+    function push(keep) {
+        clearTimeout(pushTimer);
+        if (!csrfEl) return Promise.resolve();
+        var now = snap(), before = sent;
+        if (now === sent) return Promise.resolve();
+        sent = now;
+        var fd = new FormData();
+        fd.append('action', 'ui_save'); fd.append('csrf', csrfEl.value); fd.append('ui', now);
+        if (keep && navigator.sendBeacon) {
+            // Der Browser schickt das auch dann noch ab, wenn die Seite schon weg ist
+            try { if (navigator.sendBeacon(location.pathname, fd)) return Promise.resolve(); } catch (e) {}
+        }
+        // keepalive: Die Anfrage läuft zu Ende, auch wenn gleich danach neu geladen oder die Seite geschlossen wird
+        var opts = { method: 'POST', body: fd, credentials: 'same-origin', keepalive: true, headers: { 'X-CSRF-Token': csrfEl.value } };
+        return fetch('', opts)
+            .then(function (r) { return r.json(); })
+            .then(function (j) { if (!j || !j.success) sent = before; })
+            .catch(function () { sent = before; });
+    }
+    if (csrfEl) {
+        // Jede Änderung an einer der Einstellungen (auch Ansicht, Sortierung, Gruppierung in der App) stößt das Speichern an
+        var uiKeys = {};
+        for (var uk in ui.keys) uiKeys[ui.keys[uk]] = 1;
+        ui.onPut = function (k) {
+            // Sofort losschicken, ohne Wartezeit: so ist es auch dann gespeichert, wenn gleich danach neu geladen wird
+            if (uiKeys[k]) push();
+        };
+        // Seite wird geschlossen oder neu geladen, bevor gespeichert wurde: jetzt noch schnell nachholen
+        window.addEventListener('pagehide', function () { push(true); });
+        doc.addEventListener('visibilitychange', function () { if (doc.visibilityState === 'hidden') push(true); });
+        // Konto hatte noch nichts gespeichert, der Browser aber schon: einmalig übernehmen
+        push();
+    }
     var ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 000 18z" fill="currentColor" stroke="none"/></svg>';
     var CLOSE = '<svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>';
     // Vorschau je Schema: [Hintergrund, Akzent, Textfarbe]
@@ -6413,7 +6541,7 @@ function lvUiFoot(): void {
         + '<div class="lvui-lbl">Dunkle Farben</div><div class="lvui-row">' + swatches('d') + '</div>'
         + '<div class="lvui-lbl">Sprache</div><div class="lvui-row two">'
         + btn('data-lang="de" lang="de"', 'Deutsch') + btn('data-lang="en" lang="en"', 'English') + '</div>'
-        + '<p class="lvui-note">„Automatisch“ richtet sich nach der Einstellung deines Geräts. Die Wahl gilt für diesen Browser.</p>'
+        + '<p class="lvui-note">„Automatisch“ richtet sich nach der Einstellung deines Geräts. Die Wahl wird an deinem Konto gespeichert.</p>'
         + '</div></div>';
     doc.body.appendChild(ov);
 
@@ -6450,12 +6578,14 @@ function lvUiFoot(): void {
             var lang = b.getAttribute('data-lang');
             if (lang === ui.lang) return;
             set('lv_lang', lang);
-            // Neu laden per GET, damit ein abgeschicktes Formular nicht noch einmal gesendet wird
-            location.replace(location.href);
+            // Erst speichern, dann neu laden (per GET, damit ein abgeschicktes Formular nicht noch einmal gesendet wird)
+            var go = function () { location.replace(location.href); };
+            push().then(go, go);
             return;
         }
         ui.apply();
         paint();
+        push();
     });
     doc.addEventListener('keydown', function (e) {
         if (e.key === 'Escape' && !ov.classList.contains('hidden')) { e.stopPropagation(); close(); }
@@ -6498,7 +6628,7 @@ function lvUiFoot(): void {
         "Design & Sprache": "Appearance & language", "Modus": "Mode", "Automatisch": "Automatic", "Hell": "Light", "Dunkel": "Dark",
         "Helle Farben": "Light colors", "Dunkle Farben": "Dark colors", "Sprache": "Language",
         "Violett": "Violet", "Blau": "Blue", "Grün": "Green",
-        "„Automatisch“ richtet sich nach der Einstellung deines Geräts. Die Wahl gilt für diesen Browser.": "“Automatic” follows your device setting. Your choice applies to this browser.",
+        "„Automatisch“ richtet sich nach der Einstellung deines Geräts. Die Wahl wird an deinem Konto gespeichert.": "“Automatic” follows your device setting. Your choice is saved with your account.",
 
         // Anmeldeseite
         "LinkVault – Einrichtung": "LinkVault – Setup", "LinkVault – Passwort vergessen": "LinkVault – Forgot password",
