@@ -8,6 +8,10 @@ Upload `index.php`, open it in the browser, create the first account. That's the
 
 **Deutsche Fassung: [README.md](README.md)**
 
+![LinkVault with sample entries](docs/screenshot.png)
+
+*Sample data, made up for the screenshot.*
+
 ## Features
 
 - Bookmarks with nested folders, tags, favourites, notes, full-text search
