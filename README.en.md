@@ -4,7 +4,7 @@ A self-hosted bookmark manager in **one single PHP file**. No database, no depen
 
 Upload `index.php`, open it in the browser, create the first account. That's the whole installation.
 
-> The user interface is currently German. The code comments are German as well.
+> The interface is available in German and English (switchable in the app). The code comments are German.
 
 **Deutsche Fassung: [README.md](README.md)**
 
@@ -38,7 +38,7 @@ Upload `index.php`, open it in the browser, create the first account. That's the
 2. Make sure PHP may write to that directory (it creates `data/` next to the file).
 3. Open the page **immediately** and create the first account. This account is the administrator.
 4. Check that `data/` is not reachable from outside (see "Protect the data directory").
-5. In *Werkzeuge → Konto & Sicherheit*: create a recovery code and switch on two-factor login.
+5. In *Tools → Account & security*: create a recovery code and switch on two-factor login.
 
 > The first visitor who opens a freshly uploaded, not yet configured LinkVault becomes the administrator. Do step 3 right after uploading.
 
@@ -154,7 +154,7 @@ Honest limits, so you can decide for yourself:
 ## Backups
 
 - Automatic: one snapshot per day (14 kept) and one before each bulk action (10 kept), per user, encrypted like the live data.
-- Manual: *Werkzeuge → Backups* downloads a `.lvbak` file containing the encrypted data plus the wrapped key. It is useless without the password that was valid at the time of the download, and it can be imported into any LinkVault installation.
+- Manual: *Tools → Backups* downloads a `.lvbak` file containing the encrypted data plus the wrapped key. It is useless without the password that was valid at the time of the download, and it can be imported into any LinkVault installation.
 - For a complete copy of the installation, back up the whole `data/` directory.
 
 ## Configuration
