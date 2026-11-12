@@ -180,7 +180,7 @@ Please open an issue. If the problem is exploitable, describe it without a worki
 
 ## License
 
-GNU General Public License v3.0, see [LICENSE](LICENSE). You may use, study, change and share LinkVault freely. If you pass it on, changed or unchanged, you must do so under the same license and include the source.
+GNU Affero General Public License v3.0, see [LICENSE](LICENSE). You may use, study, change and share LinkVault freely, privately or commercially. If you pass it on or sell it, changed or unchanged, you must do so under the same license and include the source. The same applies if you offer a modified version to others as a service over a network: you have to publish your source as well.
 
 ## Credits
 

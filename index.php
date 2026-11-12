@@ -15,7 +15,7 @@
  * Alles Geheime entsteht erst beim ersten Aufruf (Einrichtungs-Assistent) und liegt
  * dann im Ordner data/. Den Ordner data/ niemals veröffentlichen oder ins Git legen.
  *
- * Lizenz: GNU General Public License v3.0, siehe Datei LICENSE.
+ * Lizenz: GNU Affero General Public License v3.0, siehe Datei LICENSE.
  * Schrift: Inter (SIL Open Font License 1.1, https://github.com/rsms/inter), eingebettet.
  */
 

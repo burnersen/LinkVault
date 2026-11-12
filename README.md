@@ -178,7 +178,7 @@ Bitte ein Issue aufmachen. Lässt sich das Problem ausnutzen, beschreib es zuers
 
 ## Lizenz
 
-GNU General Public License v3.0, siehe [LICENSE](LICENSE). Du darfst LinkVault frei benutzen, untersuchen, verändern und weitergeben. Wer es weitergibt, verändert oder unverändert, muss das unter derselben Lizenz tun und den Quelltext mitliefern.
+GNU Affero General Public License v3.0, siehe [LICENSE](LICENSE). Du darfst LinkVault frei benutzen, untersuchen, verändern und weitergeben, privat wie geschäftlich. Wer es weitergibt oder verkauft, verändert oder unverändert, muss das unter derselben Lizenz tun und den Quelltext mitliefern. Das gilt auch für alle, die eine veränderte Fassung anderen als Dienst im Netz anbieten: auch sie müssen ihren Quelltext offenlegen.
 
 ## Dank
 
