@@ -1,0 +1,10 @@
+# Everything secret lives here. Never commit it.
+/data/
+/.htaccess
+
+# Leftovers from very old versions and exported backups
+/lv_auth.json
+/bookmarks.json
+/bookmarks.lock
+/backups/
+*.lvbak
