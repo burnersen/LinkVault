@@ -6,6 +6,10 @@ Eine Lesezeichen-Verwaltung zum Selbsthosten in **einer einzigen PHP-Datei**. Ke
 
 **English version: [README.en.md](README.en.md)**
 
+![LinkVault mit Beispieleinträgen](docs/screenshot.png)
+
+*Beispieldaten, erfunden für den Screenshot.*
+
 ## Funktionen
 
 - Lesezeichen mit verschachtelten Ordnern, Schlagwörtern, Favoriten, Notizen und Volltextsuche
