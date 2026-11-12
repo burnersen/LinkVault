@@ -1,42 +1,42 @@
 # LinkVault
 
-A self-hosted bookmark manager in **one single PHP file**. No database, no dependencies, no build step, no requests to third-party servers. Every user's bookmarks are stored encrypted with AES-256-GCM, and the key that opens them is protected by that user's password.
+Eine Lesezeichen-Verwaltung zum Selbsthosten in **einer einzigen PHP-Datei**. Keine Datenbank, keine Abhängigkeiten, kein Build-Schritt, keine Abrufe bei fremden Servern. Die Lesezeichen jedes Benutzers liegen mit AES-256-GCM verschlüsselt auf dem Server, und der Schlüssel dazu ist mit dem Passwort dieses Benutzers geschützt.
 
-Upload `index.php`, open it in the browser, create the first account. That's the whole installation.
+`index.php` hochladen, im Browser öffnen, erstes Konto anlegen. Das ist die ganze Installation.
 
-> The user interface is currently German. The code comments are German as well.
+**English version: [README.en.md](README.en.md)**
 
-## Features
+## Funktionen
 
-- Bookmarks with nested folders, tags, favourites, notes, full-text search
-- Import from browser bookmark files (HTML), export as HTML or JSON
-- Trash with 30 days retention, duplicate finder, dead-link checker
-- Automatic daily snapshots plus a snapshot before every bulk action
-- Encrypted full backup as a single downloadable file (`.lvbak`)
-- Multiple users, each with their own key and their own separate vault
-- Two-factor login (TOTP), recovery code, login history
-- Installable as a PWA, works without any CDN (font and CSS are embedded)
+- Lesezeichen mit verschachtelten Ordnern, Schlagwörtern, Favoriten, Notizen und Volltextsuche
+- Import aus Lesezeichen-Dateien der Browser (HTML), Export als HTML oder JSON
+- Papierkorb mit 30 Tagen Aufbewahrung, Duplikat-Suche, Prüfung auf tote Links
+- Automatische Tagesstände und ein Stand vor jeder größeren Aktion
+- Verschlüsseltes Komplett-Backup als einzelne Datei zum Herunterladen (`.lvbak`)
+- Mehrere Benutzer, jeder mit eigenem Schlüssel und eigenem, getrenntem Bereich
+- Zwei-Faktor-Anmeldung (TOTP), Wiederherstellungscode, Anmelde-Protokoll
+- Als App installierbar (PWA), läuft ohne CDN (Schrift und CSS sind eingebettet)
 
-## Requirements
+## Voraussetzungen
 
-- PHP 7.4 or newer (8.x recommended) with the `openssl` extension
-- A web server that runs PHP (Apache works out of the box, Nginx needs one extra rule, see below)
-- **HTTPS.** Without it your password travels in clear text and the rest of this document is moot.
-- Optional: `sodium` (sealed login history), `curl` (title fetch, link check), `dom` (bookmark import), `mbstring`, `intl`
+- PHP 7.4 oder neuer (empfohlen 8.x) mit der Erweiterung `openssl`
+- Ein Webserver mit PHP (Apache läuft ohne Zutun, Nginx braucht eine zusätzliche Regel, siehe unten)
+- **HTTPS.** Ohne HTTPS geht dein Passwort im Klartext durchs Netz, und alles Weitere hier ist hinfällig.
+- Optional: `sodium` (verschlossenes Anmelde-Protokoll), `curl` (Titel abrufen, Links prüfen), `dom` (Lesezeichen-Import), `mbstring`, `intl`
 
 ## Installation
 
-1. Copy `index.php` into a directory on your web server.
-2. Make sure PHP may write to that directory (it creates `data/` next to the file).
-3. Open the page **immediately** and create the first account. This account is the administrator.
-4. Check that `data/` is not reachable from outside (see "Protect the data directory").
-5. In *Werkzeuge → Konto & Sicherheit*: create a recovery code and switch on two-factor login.
+1. `index.php` in ein Verzeichnis auf deinem Webserver kopieren.
+2. PHP muss in dieses Verzeichnis schreiben dürfen (es legt daneben den Ordner `data/` an).
+3. Die Seite **sofort** aufrufen und das erste Konto anlegen. Dieses Konto ist der Administrator.
+4. Prüfen, dass `data/` von außen nicht erreichbar ist (siehe „Den Datenordner schützen“).
+5. Unter *Werkzeuge → Konto & Sicherheit* einen Wiederherstellungscode anlegen und die Zwei-Faktor-Anmeldung einschalten.
 
-> The first visitor who opens a freshly uploaded, not yet configured LinkVault becomes the administrator. Do step 3 right after uploading.
+> Wer ein frisch hochgeladenes, noch nicht eingerichtetes LinkVault als Erster aufruft, wird Administrator. Schritt 3 also direkt nach dem Hochladen erledigen.
 
-### Protect the data directory
+### Den Datenordner schützen
 
-LinkVault writes `.htaccess` files that block all access to `data/`. That works on Apache if `AllowOverride` is enabled. Nginx ignores `.htaccess`, so add this to your `server { }` block (the same snippet is written to `data/nginx-deny.conf`):
+LinkVault legt `.htaccess`-Dateien an, die jeden Zugriff auf `data/` sperren. Das wirkt unter Apache, wenn `AllowOverride` eingeschaltet ist. Nginx beachtet `.htaccess` nicht, dort gehört dieser Block in die `server { }`-Sektion (derselbe Text liegt auch in `data/nginx-deny.conf`):
 
 ```nginx
 location ^~ /data/ {
@@ -45,138 +45,142 @@ location ^~ /data/ {
 }
 ```
 
-Test it. This must **not** return 200:
+Bitte testen. Hier darf **keine** 200 herauskommen:
 
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' https://your-domain.example/linkvault/data/lv_auth.json
+curl -sS -o /dev/null -w '%{http_code}\n' https://deine-domain.example/linkvault/data/lv_auth.json
 ```
 
-Everything in `data/` is encrypted or hashed, so a leak is not an instant disaster. But it would hand an attacker the material for offline password guessing, and that is exactly what you don't want.
+Alles in `data/` ist verschlüsselt oder gehasht, ein Leck wäre also nicht sofort eine Katastrophe. Ein Angreifer hätte damit aber das Material, um Passwörter in Ruhe offline durchzuprobieren, und genau das soll er nicht bekommen.
 
-## Accounts and roles
+## Konten und Rollen
 
-- The **first account** is the administrator.
-- Anyone else can **request access** on the login page by choosing a user name and a password. The account is created right away with its own key, but stays locked until the administrator approves it.
-- The administrator can approve, reject, block, unblock and delete users, and can close registration completely.
-- The administrator **cannot read other users' bookmarks** and **cannot reset their passwords**. There is no master key. A user who loses both password and recovery code has lost the data, by design.
-- Limits against abuse: at most 3 requests per network address per day, 20 pending requests, 50 users in total.
+- Das **erste Konto** ist der Administrator.
+- Alle anderen können auf der Anmeldeseite **Zugang anfragen** und suchen sich dabei Namen und Passwort selbst aus. Das Konto wird sofort mit eigenem Schlüssel angelegt, bleibt aber zu, bis der Administrator es freigibt.
+- Der Administrator kann Anfragen freigeben oder ablehnen, Benutzer sperren, entsperren und löschen und neue Anfragen ganz abschalten.
+- Der Administrator **kann die Lesezeichen anderer nicht lesen** und **ihre Passwörter nicht zurücksetzen**. Es gibt keinen Generalschlüssel. Wer Passwort und Wiederherstellungscode verliert, hat seine Daten verloren. Das ist Absicht.
+- Grenzen gegen Missbrauch: höchstens 3 Anfragen pro Anschluss und Tag, 20 wartende Anfragen, 50 Benutzer insgesamt.
 
-## How your data is protected
+## So sind deine Daten geschützt
 
-### Key hierarchy
+### Schlüssel-Aufbau
 
 ```
-password ──PBKDF2-SHA256, 600,000 rounds, random 16-byte salt──▶ key-encryption key (KEK)
-                                                                      │
-random 256-bit data key (DEK) ◀──unwrapped with AES-256-GCM──────────┘
+Passwort ──PBKDF2-SHA256, 600.000 Runden, zufälliges Salt (16 Byte)──▶ Schlüssel-Schlüssel (KEK)
+                                                                            │
+zufälliger 256-Bit-Datenschlüssel (DEK) ◀──mit AES-256-GCM ausgepackt──────┘
         │
-        └──AES-256-GCM, fresh random 96-bit nonce on every write──▶ bookmarks, backups, TOTP secret
+        └──AES-256-GCM, bei jedem Speichern neue zufällige 96-Bit-Nonce──▶ Lesezeichen, Backups, TOTP-Geheimnis
 ```
 
-- Each user gets an own random 256-bit data key, created with PHP's CSPRNG (`random_bytes`) at account creation.
-- The data key is never written to disk in the clear. It is stored only *wrapped* with a key derived from the password.
-- Changing the password re-wraps the same data key. The bookmarks don't need to be re-encrypted.
-- AES-GCM is authenticated encryption. Tampered files fail to decrypt instead of yielding garbage.
-- If no key is available, LinkVault refuses to save rather than falling back to plain text.
+- Jeder Benutzer bekommt beim Anlegen einen eigenen zufälligen 256-Bit-Datenschlüssel aus PHPs sicherem Zufallsgenerator (`random_bytes`).
+- Der Datenschlüssel liegt nie im Klartext auf der Platte. Gespeichert ist er nur *verpackt* mit einem Schlüssel, der aus dem Passwort abgeleitet wird.
+- Beim Passwortwechsel wird derselbe Datenschlüssel neu verpackt. Die Lesezeichen müssen dafür nicht neu verschlüsselt werden.
+- AES-GCM verschlüsselt und prüft zugleich die Echtheit. Manipulierte Dateien lassen sich nicht entschlüsseln, statt Datenmüll zu liefern.
+- Fehlt der Schlüssel, speichert LinkVault lieber gar nicht als unverschlüsselt.
 
-### What is stored on the server
+### Was auf dem Server liegt
 
-| File | Content | Readable without the password? |
+| Datei | Inhalt | Ohne Passwort lesbar? |
 |---|---|---|
-| `data/bookmarks.json`, `data/users/<id>/bookmarks.json` | bookmarks | No (AES-256-GCM) |
-| `…/backups/*.json` | snapshots of the above | No (AES-256-GCM) |
-| `data/lv_auth.json`, `…/auth.json` | user name, password hash (`password_hash`, bcrypt), salt, wrapped data key, encrypted TOTP secret, settings | User name and settings yes, everything secret no |
-| `…/state.json` | account status (pending / active / blocked), timestamps, sealed registration note | Status and timestamps yes |
-| `…/attempts.log` | login history: time, IP address, attempted name | No, if `sodium` is available (see below) |
-| `…/favicon_cache/` | site icons | No (AES-256-GCM). File names are keyed HMACs, so they don't reveal the domain. |
-| `data/throttle/` | failed-login counters, file names are SHA-256 hashes of the address | Counters yes, addresses no |
-| `data/sessions/` | PHP sessions | The data key in there is encrypted (see below) |
+| `data/bookmarks.json`, `data/users/<id>/bookmarks.json` | Lesezeichen | Nein (AES-256-GCM) |
+| `…/backups/*.json` | ältere Stände davon | Nein (AES-256-GCM) |
+| `data/lv_auth.json`, `…/auth.json` | Benutzername, Passwort-Hash (`password_hash`, bcrypt), Salt, verpackter Datenschlüssel, verschlüsseltes TOTP-Geheimnis, Einstellungen | Benutzername und Einstellungen ja, alles Geheime nein |
+| `…/state.json` | Stand des Kontos (wartet / aktiv / gesperrt), Zeitpunkte, verschlossene Nachricht der Anfrage | Stand und Zeitpunkte ja |
+| `…/attempts.log` | Anmelde-Protokoll: Zeit, IP-Adresse, versuchter Name | Nein, sofern `sodium` vorhanden ist (siehe unten) |
+| `…/favicon_cache/` | Icons der Seiten | Nein (AES-256-GCM). Die Dateinamen sind mit dem Schlüssel gebildete Prüfsummen (HMAC) und verraten die Domain nicht. |
+| `data/throttle/` | Zähler für Fehlversuche, Dateinamen sind SHA-256-Prüfsummen der Adresse | Zähler ja, Adressen nein |
+| `data/sessions/` | PHP-Sitzungen | Der Datenschlüssel darin ist verschlüsselt (siehe unten) |
 
-There is nothing else. No database and no log file that contains your URLs or the domains you bookmarked.
+Mehr gibt es nicht. Keine Datenbank und keine Protokolldatei, in der deine Adressen oder die gespeicherten Domains stehen.
 
-### Sessions
+### Sitzungen
 
-After login the data key has to be available for each request. It is **not** stored in the session in the clear:
+Nach der Anmeldung muss der Datenschlüssel bei jeder Anfrage verfügbar sein. Er liegt dafür **nicht** im Klartext in der Sitzung:
 
-- A random 256-bit session key is generated and sent to the browser as a cookie (`HttpOnly`, `SameSite=Lax`, `Secure` on HTTPS).
-- The session file on the server only contains the data key encrypted with that cookie key.
-- Somebody who copies the session files from the server gets nothing usable. Both halves are needed.
-- Sessions live in LinkVault's own directory, not in the shared `/tmp` of the hoster.
-- Session ID is regenerated at login. Idle timeout is configurable (15 minutes to 30 days, default 8 hours).
-- Changing the password logs out all other devices.
+- Es wird ein zufälliger 256-Bit-Sitzungsschlüssel erzeugt und als Cookie an den Browser geschickt (`HttpOnly`, `SameSite=Lax`, bei HTTPS `Secure`).
+- In der Sitzungsdatei auf dem Server steht der Datenschlüssel nur verschlüsselt mit diesem Cookie-Schlüssel.
+- Wer die Sitzungsdateien vom Server kopiert, kann damit nichts anfangen. Es braucht beide Hälften.
+- Die Sitzungen liegen in einem eigenen Ordner von LinkVault, nicht im gemeinsamen `/tmp` des Hosters.
+- Bei der Anmeldung gibt es eine neue Sitzungskennung. Die automatische Abmeldung ist einstellbar (15 Minuten bis 30 Tage, Standard 8 Stunden).
+- Ein Passwortwechsel meldet alle anderen Geräte ab.
 
-### Login protection
+### Schutz der Anmeldung
 
-- Passwords: at least 12 characters with letters and digits. Stored only as a `password_hash()` hash.
-- Rate limiting per address with growing lock times (3 s, 10 s, 30 s, 60 s … up to 15 minutes). IPv6 addresses are grouped by /64. Only `REMOTE_ADDR` is trusted, never `X-Forwarded-For`.
-- A global brake slows everyone down briefly when failed logins pile up from many addresses.
-- Unknown user names take the same time as wrong passwords, and the reason for a refusal (pending, blocked) is only revealed after the correct password.
-- **Two-factor login (TOTP, RFC 6238)**: works with Aegis, 2FAS, Google Authenticator and so on. The TOTP secret is stored encrypted with the data key. Each code is accepted only once.
-- **Recovery code**: 24 random characters (120 bits). It wraps a second copy of the data key. Using it sets a new password, invalidates the code and switches TOTP off (a lost phone is the usual reason to need it).
-- Sensitive actions (password change, TOTP on/off, new recovery code, deleting a user) ask for the current password again. Five wrong entries end the session.
-- **Login history**: every attempt is logged with time, address and attempted name, sealed with a public key (`sodium_crypto_box_seal`). The server can write entries but only the logged-in owner can read them. After login you see what happened since your last visit.
+- Passwörter: mindestens 12 Zeichen mit Buchstaben und Zahlen. Gespeichert wird nur ein Hash aus `password_hash()`.
+- Bremse pro Adresse mit wachsenden Sperrzeiten (3 s, 10 s, 30 s, 60 s … bis 15 Minuten). IPv6-Adressen werden als /64-Netz zusammengefasst. Vertraut wird nur `REMOTE_ADDR`, nie `X-Forwarded-For`.
+- Eine Gesamtbremse verlangsamt kurz alle, wenn sich Fehlversuche von vielen Adressen häufen.
+- Unbekannte Benutzernamen kosten dieselbe Zeit wie falsche Passwörter. Warum eine Anmeldung abgelehnt wird (wartet, gesperrt), erfährt man erst nach dem richtigen Passwort.
+- **Zwei-Faktor-Anmeldung (TOTP, RFC 6238)**: läuft mit Aegis, 2FAS, Google Authenticator und ähnlichen. Das TOTP-Geheimnis ist mit dem Datenschlüssel verschlüsselt gespeichert. Jeder Code gilt nur einmal.
+- **Wiederherstellungscode**: 24 zufällige Zeichen (120 Bit). Er verpackt eine zweite Kopie des Datenschlüssels. Wer ihn einsetzt, vergibt ein neues Passwort, der Code ist danach verbraucht und TOTP wird abgeschaltet (meist braucht man ihn, weil das Handy weg ist).
+- Heikle Aktionen (Passwort ändern, TOTP ein/aus, neuer Wiederherstellungscode, Benutzer löschen) fragen noch einmal nach dem aktuellen Passwort. Nach fünf falschen Eingaben ist die Sitzung beendet.
+- **Anmelde-Protokoll**: jeder Versuch wird mit Zeit, Adresse und versuchtem Namen notiert und mit einem öffentlichen Schlüssel verschlossen (`sodium_crypto_box_seal`). Der Server kann Einträge schreiben, lesen kann sie nur der angemeldete Besitzer. Nach der Anmeldung siehst du, was seit dem letzten Mal passiert ist.
 
-### Browser-side hardening
+### Absicherung im Browser
 
-- Strict Content Security Policy: `default-src 'none'`, scripts only with a per-request nonce, no external sources of any kind, `frame-ancestors 'none'`, `form-action 'self'`
-- `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cross-Origin-Opener-Policy` and `Cross-Origin-Resource-Policy: same-origin`, HSTS on HTTPS, `X-Robots-Tag: noindex`
-- CSRF token on every state-changing request, compared in constant time. All API actions are POST-only.
-- Only `http://` and `https://` links are accepted. `javascript:`, `data:` and friends are rejected, also on import.
+- Strenge Content Security Policy: `default-src 'none'`, Skripte nur mit dem Einmal-Kennzeichen (Nonce) der jeweiligen Seite, keinerlei fremde Quellen, `frame-ancestors 'none'`, `form-action 'self'`
+- `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cross-Origin-Opener-Policy` und `Cross-Origin-Resource-Policy: same-origin`, HSTS bei HTTPS, `X-Robots-Tag: noindex`
+- CSRF-Token bei jeder ändernden Anfrage, verglichen in konstanter Zeit. Alle Aktionen der Schnittstelle gehen nur per POST.
+- Angenommen werden nur Links mit `http://` und `https://`. `javascript:`, `data:` und Ähnliches wird abgelehnt, auch beim Import.
 
-### Privacy
+### Privatsphäre
 
-- **No third-party requests from your browser.** Font (Inter) and CSS are embedded in the file. No CDN, no analytics, no Google Fonts, no external favicon service.
-- Favicons and page titles are fetched **by your server directly from the bookmarked site**, not through Google or DuckDuckGo.
-- These outgoing requests are protected against SSRF: only public IP addresses are allowed, the connection is pinned to the address that was checked, every redirect hop is checked again, and TLS certificates are verified.
-- The only external link in the UI is an optional "open in the Internet Archive" link for dead bookmarks, and it does nothing until you click it.
+- **Dein Browser ruft nichts bei Dritten ab.** Schrift (Inter) und CSS stecken in der Datei. Kein CDN, keine Statistik, keine Google Fonts, kein fremder Favicon-Dienst.
+- Favicons und Seitentitel holt **dein Server direkt bei der gespeicherten Seite**, nicht über Google oder DuckDuckGo.
+- Diese Abrufe nach draußen sind gegen Umwege ins interne Netz (SSRF) geschützt: erlaubt sind nur öffentliche IP-Adressen, die Verbindung wird auf die geprüfte Adresse festgenagelt, jede Weiterleitung wird neu geprüft und TLS-Zertifikate werden kontrolliert.
+- Der einzige Link nach draußen in der Oberfläche ist ein optionales „im Internet Archive öffnen“ bei toten Lesezeichen. Er tut nichts, solange du ihn nicht anklickst.
 
-## What this does not protect against
+## Wogegen das nicht schützt
 
-Honest limits, so you can decide for yourself:
+Die ehrlichen Grenzen, damit du selbst entscheiden kannst:
 
-- **This is encryption at rest on the server, not end-to-end encryption.** Your password is sent to the server (over HTTPS) at login, and while a request is being processed the data key exists in the server's memory. Somebody who controls the server *while you use it* (a malicious hoster, an attacker who can modify `index.php`) can capture your password or your data. What the design does protect against: stolen or leaked files, stolen server backups, a misconfigured web server exposing `data/`, a curious co-tenant or admin browsing the disk.
-- **A weak password stays a weak password.** Anyone who obtains `auth.json` can try passwords offline. PBKDF2 with 600,000 rounds and bcrypt make that slow, not impossible. Use a long, unique password, ideally from a password manager.
-- **TOTP protects the login, not the files.** It stops someone who knows your password from logging in through the web page. It does not add anything against someone who has both your password *and* a copy of the files, because the data key can then be unwrapped directly.
-- **Metadata is visible on the server:** user names, number of users, account status, file sizes and modification times.
-- **The sites you bookmark see your server's IP address** when LinkVault fetches a title or icon or checks a link.
-- **The administrator can delete** accounts including their data, and whoever has file access to the server can do that too. Keep your own `.lvbak` backup.
-- **No password, no data.** There is no reset by e-mail and no back door. Create the recovery code and keep it somewhere safe.
-- This is a hobby project. It has not been audited by an independent security firm. The code is one readable file, so please do look for yourself.
+- **Das ist Verschlüsselung der gespeicherten Daten auf dem Server, keine Ende-zu-Ende-Verschlüsselung.** Dein Passwort geht bei der Anmeldung (über HTTPS) an den Server, und während eine Anfrage läuft, liegt der Datenschlüssel im Arbeitsspeicher des Servers. Wer den Server kontrolliert, *während du ihn benutzt* (ein böswilliger Hoster, ein Angreifer, der `index.php` verändern kann), kann Passwort oder Daten abgreifen. Wogegen der Aufbau schützt: gestohlene oder durchgesickerte Dateien, gestohlene Server-Backups, ein falsch eingestellter Webserver, der `data/` ausliefert, neugierige Mitbenutzer oder Admins, die auf der Platte stöbern.
+- **Ein schwaches Passwort bleibt ein schwaches Passwort.** Wer an `auth.json` kommt, kann Passwörter offline durchprobieren. PBKDF2 mit 600.000 Runden und bcrypt machen das langsam, nicht unmöglich. Nimm ein langes, einmaliges Passwort, am besten aus einem Passwort-Manager.
+- **TOTP schützt die Anmeldung, nicht die Dateien.** Es hält jemanden auf, der dein Passwort kennt und sich über die Webseite anmelden will. Es hilft nicht gegen jemanden, der dein Passwort *und* eine Kopie der Dateien hat, denn dann lässt sich der Datenschlüssel direkt auspacken.
+- **Rahmendaten sind auf dem Server sichtbar:** Benutzernamen, Zahl der Benutzer, Stand der Konten, Dateigrößen und Änderungszeiten.
+- **Die gespeicherten Seiten sehen die IP-Adresse deines Servers**, wenn LinkVault Titel oder Icon holt oder einen Link prüft.
+- **Der Administrator kann Konten samt Daten löschen**, und wer Dateizugriff auf den Server hat, kann das auch. Heb dir ein eigenes `.lvbak`-Backup auf.
+- **Kein Passwort, keine Daten.** Es gibt kein Zurücksetzen per E-Mail und keine Hintertür. Leg den Wiederherstellungscode an und verwahre ihn sicher.
+- Das ist ein Hobbyprojekt. Es wurde nicht von einer unabhängigen Sicherheitsfirma geprüft. Der Code ist eine einzige lesbare Datei, schau also gern selbst nach.
 
 ## Backups
 
-- Automatic: one snapshot per day (14 kept) and one before each bulk action (10 kept), per user, encrypted like the live data.
-- Manual: *Werkzeuge → Backups* downloads a `.lvbak` file containing the encrypted data plus the wrapped key. It is useless without the password that was valid at the time of the download, and it can be imported into any LinkVault installation.
-- For a complete copy of the installation, back up the whole `data/` directory.
+- Automatisch: ein Stand pro Tag (14 bleiben) und einer vor jeder größeren Aktion (10 bleiben), pro Benutzer, verschlüsselt wie die laufenden Daten.
+- Von Hand: *Werkzeuge → Backups* lädt eine `.lvbak`-Datei herunter, mit den verschlüsselten Daten und dem verpackten Schlüssel. Ohne das Passwort, das beim Herunterladen galt, ist sie wertlos. Einspielen lässt sie sich in jedes LinkVault.
+- Für eine vollständige Kopie der Installation den ganzen Ordner `data/` sichern.
 
-## Configuration
+## Einstellungen
 
-A few constants at the top of `index.php`:
+Ein paar Konstanten ganz oben in `index.php`:
 
-| Constant | Default | Meaning |
+| Konstante | Standard | Bedeutung |
 |---|---|---|
-| `LV_KDF_ITERS` | `600000` | PBKDF2 rounds. Raising it upgrades existing keys at the next login. |
-| `LV_IDLE_DEFAULT` | `480` | Minutes of inactivity before automatic logout (per user changeable in the UI) |
-| `LV_SESSION_MAX_DAYS` | `30` | Maximum session lifetime |
-| `LV_MAX_PENDING` / `LV_MAX_USERS` | `20` / `50` | Limits for access requests and users |
-| `BACKUP_KEEP_DAILY` / `BACKUP_KEEP_PRE` | `14` / `10` | How many snapshots are kept |
-| `LV_TRASH_DAYS` | `30` | Retention of deleted bookmarks |
-| `LV_TAILWIND_CDN` | `false` | Development only. `true` loads Tailwind from a CDN and loosens the CSP. Leave it off. |
-| `LV_AUTH_ENABLED` | `true` | **Never set this to `false` on a reachable server.** It disables login and encryption. |
+| `LV_KDF_ITERS` | `600000` | PBKDF2-Runden. Wer den Wert erhöht, hebt vorhandene Schlüssel bei der nächsten Anmeldung auf den neuen Stand. |
+| `LV_IDLE_DEFAULT` | `480` | Minuten ohne Aktivität bis zur automatischen Abmeldung (jeder Benutzer kann das in der Oberfläche ändern) |
+| `LV_SESSION_MAX_DAYS` | `30` | Längste Laufzeit einer Sitzung |
+| `LV_MAX_PENDING` / `LV_MAX_USERS` | `20` / `50` | Grenzen für Zugangsanfragen und Benutzer |
+| `BACKUP_KEEP_DAILY` / `BACKUP_KEEP_PRE` | `14` / `10` | So viele Stände bleiben erhalten |
+| `LV_TRASH_DAYS` | `30` | So lange bleiben gelöschte Lesezeichen im Papierkorb |
+| `LV_TAILWIND_CDN` | `false` | Nur zum Basteln. `true` lädt Tailwind von einem CDN und lockert die CSP. Aus lassen. |
+| `LV_AUTH_ENABLED` | `true` | **Auf einem erreichbaren Server niemals auf `false` stellen.** Das schaltet Anmeldung und Verschlüsselung ab. |
 
-## Updating
+## Aktualisieren
 
-Replace `index.php` with the new version. `data/` stays untouched. Older data formats are migrated automatically at the next login.
+`index.php` durch die neue Fassung ersetzen. `data/` bleibt, wie es ist. Ältere Datenformate werden bei der nächsten Anmeldung von selbst umgestellt.
 
-## Never publish `data/`
+## `data/` niemals veröffentlichen
 
-`index.php` contains no credentials, keys or personal data. Everything secret is created at first start and lives in `data/`. The `.gitignore` in this repository excludes it. Keep it that way.
+`index.php` enthält keine Zugangsdaten, Schlüssel oder persönlichen Angaben. Alles Geheime entsteht beim ersten Start und liegt in `data/`. Die `.gitignore` in diesem Repository schließt den Ordner aus. Das soll so bleiben.
 
-## Reporting security issues
+## Sicherheitslücken melden
 
-Please open an issue. If the problem is exploitable, describe it without a working exploit first.
+Bitte ein Issue aufmachen. Lässt sich das Problem ausnutzen, beschreib es zuerst ohne fertigen Angriff.
 
-## Credits
+## Lizenz
 
-Typeface: [Inter](https://github.com/rsms/inter) by Rasmus Andersson, SIL Open Font License 1.1, embedded as a subset.
-CSS utilities generated with [Tailwind CSS](https://tailwindcss.com) (MIT License), embedded.
+GNU General Public License v3.0, siehe [LICENSE](LICENSE). Du darfst LinkVault frei benutzen, untersuchen, verändern und weitergeben. Wer es weitergibt, verändert oder unverändert, muss das unter derselben Lizenz tun und den Quelltext mitliefern.
+
+## Dank
+
+Schrift: [Inter](https://github.com/rsms/inter) von Rasmus Andersson, SIL Open Font License 1.1, als Auswahl eingebettet.
+CSS-Bausteine erzeugt mit [Tailwind CSS](https://tailwindcss.com) (MIT-Lizenz), eingebettet.
