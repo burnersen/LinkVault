@@ -3087,6 +3087,8 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
             outline: 2px solid #a78bfa; outline-offset: 1px;
             box-shadow: 0 0 14px -2px rgba(139, 92, 246, 0.55);
         }
+        /* Tastatur-Rahmen in der Mehrfachauswahl (Pfeiltasten) */
+        body.select-mode .bookmark-card.kb-cursor { outline: 2px dashed #c4b5fd; outline-offset: 2px; }
 
         .favicon {
             width: 28px; height: 28px; border-radius: 7px; object-fit: contain;
@@ -4164,6 +4166,7 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
     let selectMode = false;
     let selected = new Set();
     let lastSelected = null;
+    let kbCursor = null;   // Tastatur-Rahmen in der Mehrfachauswahl: { el, id }
     let dragIds = null;
     let lastSync = Date.now();
     // Welche Gruppen ausgeklappt sind (bleibt nach render erhalten)
@@ -4510,6 +4513,7 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
     function toggleSelectMode(force) {
         selectMode = typeof force === 'boolean' ? force : !selectMode;
         if (!selectMode) { selected.clear(); lastSelected = null; }
+        kbCursor = null;
         updateBulkUI();
         render();
     }
@@ -5856,6 +5860,87 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
             render();
             showToast('Ansicht: ' + { cards: 'Karten', list: 'Liste', compact: 'Kompakt' }[viewMode]);
         }
+        else cardKeys(e);
+    });
+
+    /* ---------- Tastatur an den Einträgen (Desktop) ----------
+       Normal: Maus über einem Eintrag, dann Entf = löschen, F = Favorit, C = URL kopieren, E = bearbeiten.
+       Mehrfachauswahl: Pfeiltasten wandern, Leertaste markiert, Umschalt+Pfeil markiert mit,
+       A = alle angezeigten, Entf = markierte löschen. */
+    function kbSetCursor(card) {
+        mainEl.querySelectorAll('.bookmark-card.kb-cursor').forEach(c => c.classList.remove('kb-cursor'));
+        kbCursor = card ? { el: card, id: card.dataset.id } : null;
+        if (!card) return;
+        card.classList.add('kb-cursor');
+        // In den sichtbaren Bereich holen, ohne unter Kopfzeile oder Sammel-Leiste zu rutschen
+        const r = card.getBoundingClientRect();
+        const head = document.getElementById('appHeader');
+        const top = (head ? head.offsetHeight : 0) + 10;
+        const bottom = window.innerHeight - ($('#bulkBar').offsetHeight || 0) - 10;
+        if (r.top < top) window.scrollBy(0, r.top - top);
+        else if (r.bottom > bottom) window.scrollBy(0, r.bottom - bottom);
+    }
+    function kbMove(cards, cur, key) {
+        const i = cards.indexOf(cur);
+        if (key === 'ArrowLeft') return cards[i - 1] || cur;
+        if (key === 'ArrowRight') return cards[i + 1] || cur;
+        // Hoch/Runter: nächste Reihe, dort der Eintrag, der am ehesten drüber bzw. drunter liegt
+        const down = key === 'ArrowDown';
+        const c = cur.getBoundingClientRect();
+        let best = null, bestRow = Infinity, bestDx = Infinity;
+        cards.forEach(el => {
+            const r = el.getBoundingClientRect();
+            const row = down ? r.top - c.top : c.top - r.top;
+            if (row < 4) return;
+            const dx = Math.abs((r.left + r.width / 2) - (c.left + c.width / 2));
+            if (row < bestRow - 4 || (Math.abs(row - bestRow) <= 4 && dx < bestDx)) { best = el; bestRow = row; bestDx = dx; }
+        });
+        return best || cur;
+    }
+    function cardKeys(e) {
+        const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+        if (!selectMode) {
+            if (!['Delete', 'f', 'c', 'e'].includes(key) || e.repeat) return;
+            const card = mainEl.querySelector('.bookmark-card:hover');
+            const bm = card && byId(card.dataset.id);
+            if (!bm) return;
+            e.preventDefault();
+            if (key === 'Delete') deleteIds([bm.id]);
+            else if (key === 'f') toggleFavorite(bm.id);
+            else if (key === 'c') copyText(bm.url, 'URL kopiert');
+            else openEditModal(bm);
+            return;
+        }
+        const arrow = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(key);
+        if (!arrow && key !== ' ' && key !== 'a' && key !== 'Delete') return;
+        e.preventDefault();
+        // Ein noch fokussierter Knopf würde die Leertaste sonst als Klick werten
+        if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+        if (key === 'Delete') { if (!e.repeat) askDeleteBulk(); return; }
+        if (key === 'a') { if (!e.repeat) $('#bulkSelectAll').click(); return; }
+        const cards = Array.from(mainEl.querySelectorAll('.bookmark-card')).filter(c => c.offsetParent !== null);
+        if (!cards.length) return;
+        let cur = kbCursor && (cards.includes(kbCursor.el) ? kbCursor.el : cards.find(c => c.dataset.id === kbCursor.id));
+        if (!cur) {
+            // Start: der Eintrag unter der Maus, sonst der erste
+            cur = mainEl.querySelector('.bookmark-card:hover');
+            if (!cur || !cards.includes(cur)) cur = cards[0];
+            kbSetCursor(cur);
+            if (arrow && !e.shiftKey) return;
+        }
+        if (key === ' ') { if (!e.repeat) toggleSelect(cur.dataset.id, false); kbSetCursor(cur); return; }
+        const next = kbMove(cards, cur, key);
+        if (e.shiftKey) {
+            selected.add(cur.dataset.id); selected.add(next.dataset.id);
+            lastSelected = next.dataset.id;
+            paintSelection();
+        }
+        kbSetCursor(next);
+    }
+    // Klick in der Mehrfachauswahl setzt den Tastatur-Rahmen auf den angeklickten Eintrag
+    mainEl.addEventListener('click', e => {
+        const card = selectMode && e.target.closest('.bookmark-card');
+        if (card) kbSetCursor(card);
     });
 
     // Keep content below fixed header
@@ -6273,6 +6358,7 @@ html.lvt .bookmark-card.selected {
     border-color: rgb(var(--lv-ar) / 0.8) !important; box-shadow: 0 0 0 2px rgb(var(--lv-ar) / 0.3);
     background: linear-gradient(155deg, var(--lv-card), rgb(var(--lv-ar) / 0.14));
 }
+html.lvt body.select-mode .bookmark-card.kb-cursor { outline-color: var(--lv-a); }
 html.lvt .bookmark-card.last-opened { outline-color: var(--lv-a); box-shadow: 0 0 14px -2px rgb(var(--lv-ar) / 0.6); }
 html[data-lvt^="l"] .bookmark-card { box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06); }
 html.lvt .favicon { background: var(--lv-group); }
