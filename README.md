@@ -15,6 +15,7 @@ Eine Lesezeichen-Verwaltung zum Selbsthosten in **einer einzigen PHP-Datei**. Ke
 - Lesezeichen mit verschachtelten Ordnern, Schlagwörtern, Favoriten, Notizen und Volltextsuche
 - Import aus Lesezeichen-Dateien der Browser (HTML), Export als HTML oder JSON
 - Papierkorb mit 30 Tagen Aufbewahrung, Duplikat-Suche, Prüfung auf tote Links
+- Automatisch sortieren (Werkzeuge → Automatisch sortieren): schlägt Tags und Ordner vor, ganz ohne KI und ohne fremde Dienste. Grundlage sind bekannte Domains (YouTube → Video, Chefkoch → Kochen, …), typische Stichwörter, deine bisherige Sortierung und eigene Regeln wie „xxx → #nsfw, Ordner NSFW“. Erst kommt eine Vorschau zum Abhaken, vorher wird ein Backup angelegt, danach gibt es „Rückgängig“.
 - Automatische Tagesstände und ein Stand vor jeder größeren Aktion
 - Verschlüsseltes Komplett-Backup als einzelne Datei zum Herunterladen (`.lvbak`)
 - Mehrere Benutzer, jeder mit eigenem Schlüssel und eigenem, getrenntem Bereich
@@ -114,6 +115,7 @@ zufälliger 256-Bit-Datenschlüssel (DEK) ◀──mit AES-256-GCM ausgepackt─
 | `data/bookmarks.json`, `data/users/<id>/bookmarks.json` | Lesezeichen | Nein (AES-256-GCM) |
 | `…/backups/*.json` | ältere Stände davon | Nein (AES-256-GCM) |
 | `data/lv_auth.json`, `…/auth.json` | Benutzername, Passwort-Hash (`password_hash`, bcrypt), Salt, verpackter Datenschlüssel, verschlüsseltes TOTP-Geheimnis, Einstellungen | Benutzername und Einstellungen ja, alles Geheime nein |
+| `data/autosort.json`, `…/autosort.json` | eigene Regeln fürs automatische Sortieren | Nein (AES-256-GCM) |
 | `data/ui.json`, `…/ui.json` | Einstellungen der Oberfläche je Benutzer: Design, Sprache, Ansicht, Sortierung | Ja (nichts Geheimes) |
 | `…/state.json` | Stand des Kontos (wartet / aktiv / gesperrt), Zeitpunkte, verschlossene Nachricht der Anfrage | Stand und Zeitpunkte ja |
 | `…/attempts.log` | Anmelde-Protokoll: Zeit, IP-Adresse, versuchter Name | Nein, sofern `sodium` vorhanden ist (siehe unten) |

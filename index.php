@@ -23,7 +23,7 @@ error_reporting(E_ALL);
 ini_set('display_errors', 0);
 date_default_timezone_set('Europe/Berlin');
 
-define('LV_VERSION', '3.3.1');
+define('LV_VERSION', '3.4.0');
 define('LV_DATA_DIR', __DIR__ . '/data');
 define('USERS_DIR', LV_DATA_DIR . '/users');       // weitere Benutzer: jeder hat hier seinen eigenen Ordner
 define('SESSION_DIR', LV_DATA_DIR . '/sessions');
@@ -929,19 +929,21 @@ function backupDaily(): void {
     if (backupCopy($name)) pruneBackups('tag_', BACKUP_KEEP_DAILY);
 }
 
-// Stand direkt vor einer großen Aktion
-function backupBefore(string $label): void {
+// Stand direkt vor einer großen Aktion. Ergebnis: Dateiname des Backups oder null, wenn nichts gesichert wurde
+function backupBefore(string $label): ?string {
     global $LV_CORRUPT;
     $prefix = $LV_CORRUPT ? 'defekt_' : 'vor_';
     $name = $prefix . date('Ymd_His') . '_' . preg_replace('/[^a-z_]/', '', $label) . '.json';
-    if (backupCopy($name)) pruneBackups($prefix, BACKUP_KEEP_PRE);
+    if (!backupCopy($name)) return null;
+    pruneBackups($prefix, BACKUP_KEEP_PRE);
+    return $name;
 }
 
 function listBackups(): array {
     $labels = [
         'bulk_delete' => 'vor Mehrfach-Löschen', 'dedupe' => 'vor Duplikate entfernen',
         'import' => 'vor Import', 'restore' => 'vor Wiederherstellung',
-        'delete_category' => 'vor Ordner löschen',
+        'delete_category' => 'vor Ordner löschen', 'autosort' => 'vor automatischem Sortieren',
     ];
     $out = [];
     foreach (glob(lvBackupDir() . '/*.json') ?: [] as $file) {
@@ -2039,7 +2041,8 @@ if ($action) {
     $mutating = ['add', 'update', 'delete', 'bulk_delete', 'bulk_move', 'bulk_favorite', 'dedupe', 'toggle_favorite',
                  'import', 'rename_category', 'delete_category', 'backup_restore', 'backup_import', 'visit', 'set_status',
                  'trash_restore', 'trash_purge', 'change_password', 'totp_enable', 'totp_disable', 'recovery_create', 'settings_save',
-                 'user_approve', 'user_reject', 'user_block', 'user_unblock', 'user_delete', 'register_toggle'];
+                 'user_approve', 'user_reject', 'user_block', 'user_unblock', 'user_delete', 'register_toggle',
+                 'autosort_apply', 'autosort_rules_save'];
     $isMutating = in_array($action, $mutating, true);
     $lockFp = null;
     if ($isMutating) {
@@ -2053,7 +2056,8 @@ if ($action) {
 
     try {
         $dataActions = ['add', 'update', 'delete', 'bulk_delete', 'bulk_move', 'bulk_favorite', 'dedupe', 'toggle_favorite',
-                        'import', 'rename_category', 'delete_category', 'visit', 'set_status', 'trash_restore', 'trash_purge'];
+                        'import', 'rename_category', 'delete_category', 'visit', 'set_status', 'trash_restore', 'trash_purge',
+                        'autosort_apply'];
         if ($LV_CORRUPT && in_array($action, $dataActions, true)) {
             throw new Exception('bookmarks.json ist beschädigt und wird nicht überschrieben. Bitte unter Werkzeuge → Backups einen Stand wiederherstellen.');
         }
@@ -2388,6 +2392,50 @@ if ($action) {
                 requireSave($bookmarks);
                 $target = $parent !== '' ? $parent : 'Allgemein';
                 jsonOut(['success' => true, 'message' => "Ordner aufgelöst, $n Link(s) liegen jetzt in „{$target}“.", 'bookmarks' => $bookmarks]);
+
+            /* ----- Automatisch sortieren (Block „Neu in 3.4“ am Dateiende) ----- */
+
+            case 'autosort_rules':
+                $rs = lvAutoSortLoad();
+                jsonOut(['success' => true, 'rules' => $rs['rules'], 'cats' => $rs['cats'], 'broken' => $rs['broken']]);
+
+            case 'autosort_rules_save':
+                $rs = lvAutoSortClean([
+                    'rules' => json_decode((string)($_POST['rules'] ?? ''), true),
+                    'cats' => json_decode((string)($_POST['cats'] ?? ''), true),
+                ]);
+                if (!lvAutoSortSave($rs)) throw new Exception('Speichern fehlgeschlagen (Schreibrechte?).');
+                jsonOut(['success' => true, 'message' => 'Regeln gespeichert.', 'rules' => $rs['rules'], 'cats' => $rs['cats']]);
+
+            case 'autosort_apply':
+                // Die Vorschläge rechnet der Browser aus, hier wird nur übernommen, was angehakt war.
+                // Schlagwörter kommen nur dazu (nie weg), der Ordner wird nur gesetzt, wenn einer mitkommt.
+                $changes = json_decode((string)($_POST['changes'] ?? ''), true);
+                if (!is_array($changes) || !$changes) throw new Exception('Nichts ausgewählt.');
+                if (count($changes) > 50000) throw new Exception('Zu viele Änderungen auf einmal.');
+                $nTag = 0; $nFolder = 0; $touched = 0;
+                foreach ($bookmarks as &$bm) {
+                    $c = $changes[$bm['id'] ?? ''] ?? null;
+                    if (!is_array($c) || !$isLive($bm)) continue;
+                    $hit = false;
+                    $add = isset($c['t']) ? cleanTags($c['t']) : [];
+                    if ($add) {
+                        $old = isset($bm['tags']) && is_array($bm['tags']) ? $bm['tags'] : [];
+                        $merged = cleanTags(array_merge($old, $add));
+                        if (count($merged) > count(cleanTags($old))) { $bm['tags'] = $merged; $nTag++; $hit = true; }
+                    }
+                    if (isset($c['f']) && is_string($c['f']) && trim($c['f']) !== '') {
+                        $cat = cleanCategory($c['f']);
+                        if ($cat !== ($bm['category'] ?? '')) { $bm['category'] = $cat; $nFolder++; $hit = true; }
+                    }
+                    if ($hit) $touched++;
+                }
+                unset($bm);
+                if ($touched === 0) jsonOut(['success' => true, 'message' => 'Nichts geändert, war schon alles so.', 'bookmarks' => $bookmarks]);
+                $backup = backupBefore('autosort');
+                requireSave($bookmarks);
+                jsonOut(['success' => true, 'bookmarks' => $bookmarks, 'backup' => $backup,
+                         'message' => "$touched Link(s) sortiert: $nTag mit neuen Tags, $nFolder in andere Ordner."]);
 
             case 'dedupe':
                 // Pro Adresse bleibt der beste Eintrag, die anderen wandern in den Papierkorb
@@ -3569,6 +3617,37 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
         .menu-opt .badge.hot { background: #f59e0b; color: #1e1b4b; font-weight: 700; }
         .user-note { font-size: 11px; color: #cbd5e1; margin-top: 0.15rem; line-height: 1.4; overflow-wrap: anywhere; }
         .toggle.green.on { background: #10b981; }
+        /* ===== Neu in 3.4: Automatisch sortieren ===== */
+        #autoOverlay > .modal-panel, #rulesOverlay > .modal-panel { max-width: 36rem; }
+        #rulesOverlay { z-index: 78; }
+        .as-opts { display: flex; flex-direction: column; gap: 0.45rem; }
+        .as-opt { display: flex; align-items: flex-start; gap: 0.5rem; font-size: 0.8rem; line-height: 1.4; color: var(--lv-t2, #e2e8f0); cursor: pointer; }
+        .as-opt input, .as-row input, .as-cat input[type="checkbox"] { accent-color: #8b5cf6; width: 1rem; height: 1rem; margin-top: 0.1rem; flex-shrink: 0; cursor: pointer; }
+        .as-sum { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-bottom: 0.65rem; }
+        .as-sum:empty { display: none; }
+        .as-row { align-items: flex-start; }
+        .as-row.as-dim .grow { opacity: 0.45; }
+        .as-chips { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-top: 0.3rem; }
+        button.bm-chip { font-family: inherit; cursor: pointer; }
+        .bm-chip.as-off { opacity: 0.4; text-decoration: line-through; }
+        html body .bm-chip.as-folder { color: var(--lv-ok-t, #6ee7b7); background: var(--lv-ok-bg, rgba(6, 78, 59, 0.35)); border-color: var(--lv-ok-line, rgba(16, 185, 129, 0.4)); }
+        .as-sum .bm-chip { font-size: 11px; padding: 0.15rem 0.45rem; }
+        .as-why { display: block; font-size: 10.5px; line-height: 1.4; color: var(--lv-t4, #64748b); margin-top: 0.25rem; }
+        .as-rule { display: grid; grid-template-columns: 1fr 1fr auto; gap: 0.35rem; align-items: center; }
+        .as-rule #ruleM { grid-column: 1 / -1; }
+        .as-cat { display: grid; grid-template-columns: auto minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1fr); gap: 0.35rem; align-items: center; }
+        .as-rule .field, .as-cat .field { padding: 0.35rem 0.5rem; font-size: 0.8rem; min-width: 0; }
+        .as-rule .btn { padding: 0.4rem 0.7rem; font-size: 0.8rem; }
+        .as-cat-name { font-size: 0.8rem; color: var(--lv-t2, #e2e8f0); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .as-cat.as-dim .field, .as-cat.as-dim .as-cat-name { opacity: 0.45; }
+        @media (max-width: 560px) {
+            .as-rule { grid-template-columns: 1fr 1fr; }
+            .as-rule .btn { grid-column: span 2; }
+            .as-cat { grid-template-columns: auto 1fr 1fr; }
+            .as-cat .as-cat-name { grid-column: 2 / span 2; }
+            .as-cat .as-ct { grid-column: 2; }
+            .as-cat .as-cf { grid-column: 3; }
+        }
         @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
     </style>
 <?php if (!LV_TAILWIND_CDN): ?>
@@ -3657,6 +3736,10 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
                         <button type="button" id="btnDedupe" class="menu-opt">
                             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/></svg>
                             Duplikate entfernen
+                        </button>
+                        <button type="button" id="btnAutoSort" class="menu-opt">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5a1.99 1.99 0 011.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"/></svg>
+                            Automatisch sortieren
                         </button>
                         <button type="button" id="btnCheckDead" class="menu-opt">
                             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
@@ -3968,6 +4051,69 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
         <div class="p-4 overflow-y-auto flex-1">
             <p class="text-sm text-slate-400 mb-3 leading-relaxed">Namen ändern und mit Enter oder dem Haken speichern. Beim Auflösen wandern die Links nach „Allgemein“, gelöscht wird nichts.</p>
             <div id="foldersList" class="space-y-1.5"></div>
+        </div>
+    </div>
+</div>
+
+<!-- AUTOMATISCH SORTIEREN -->
+<div id="autoOverlay" class="fixed inset-0 z-[75] hidden items-center justify-center p-3 bg-black/65 backdrop-blur-sm">
+    <div class="modal-panel w-full max-w-lg glass-strong rounded-2xl shadow-2xl overflow-hidden max-h-[85vh] flex flex-col">
+        <div class="px-4 py-3.5 border-b border-slate-700/45 flex items-center justify-between shrink-0">
+            <h3 class="text-base font-semibold text-white">Automatisch sortieren</h3>
+            <button type="button" id="autoClose" class="btn btn-ghost" aria-label="Schließen">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+        </div>
+        <div class="p-4 overflow-y-auto flex-1">
+            <p class="text-sm text-slate-400 mb-3 leading-relaxed">Vorschläge nach Domain, Stichwörtern, deiner bisherigen Sortierung und deinen eigenen Regeln. Geändert wird erst, wenn du auf „Übernehmen“ tippst, vorher wird automatisch ein Backup angelegt.</p>
+            <div class="box mb-3 as-opts">
+                <label class="as-opt"><input type="checkbox" id="autoOptTags" checked> <span>Tags vorschlagen (vorhandene Tags bleiben)</span></label>
+                <label class="as-opt"><input type="checkbox" id="autoOptFolders" checked> <span>Ordner vorschlagen für unsortierte Links („Allgemein“)</span></label>
+                <label class="as-opt"><input type="checkbox" id="autoOptMove"> <span>Auch Links umsortieren, die schon in einem Ordner liegen</span></label>
+                <button type="button" id="autoRulesBtn" class="btn btn-secondary w-full mt-2">Eigene Regeln und Stichwörter</button>
+            </div>
+            <p class="text-sm text-slate-300 mb-2 font-medium" id="autoHint"></p>
+            <div id="autoSummary" class="as-sum"></div>
+            <div id="autoList" class="space-y-1.5"></div>
+        </div>
+        <div class="px-4 py-3 border-t border-slate-700/45 flex gap-2 shrink-0">
+            <button type="button" id="autoCancel" class="btn btn-secondary flex-1">Abbrechen</button>
+            <button type="button" id="autoApply" class="btn btn-primary flex-1" disabled>Übernehmen</button>
+        </div>
+    </div>
+</div>
+
+<!-- EIGENE REGELN -->
+<div id="rulesOverlay" class="fixed inset-0 z-[78] hidden items-center justify-center p-3 bg-black/65 backdrop-blur-sm">
+    <div class="modal-panel w-full max-w-lg glass-strong rounded-2xl shadow-2xl overflow-hidden max-h-[85vh] flex flex-col">
+        <div class="px-4 py-3.5 border-b border-slate-700/45 flex items-center justify-between shrink-0">
+            <h3 class="text-base font-semibold text-white">Eigene Regeln und Stichwörter</h3>
+            <button type="button" id="rulesClose" class="btn btn-ghost" aria-label="Schließen">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+        </div>
+        <div class="p-4 overflow-y-auto flex-1">
+            <div class="box mb-3">
+                <h4>Eigene Regeln</h4>
+                <p>Kommt das Stichwort irgendwo in Adresse, Titel oder Beschreibung vor, gibt es die Tags und den Ordner. Groß- und Kleinschreibung ist egal. Steht ein Punkt drin (z. B. „meinebank.de“), zählt nur die Domain. Deine Regeln gehen immer vor.</p>
+                <div id="rulesList" class="space-y-1.5 mb-2"></div>
+                <div class="as-rule as-rule-new">
+                    <input type="text" id="ruleM" class="field" maxlength="100" placeholder="Stichwort oder Domain, z. B. xxx" autocomplete="off">
+                    <input type="text" id="ruleT" class="field" maxlength="200" placeholder="Tags, z. B. nsfw" autocomplete="off">
+                    <input type="text" id="ruleF" class="field" maxlength="250" placeholder="Ordner (freiwillig)" autocomplete="off" list="ruleFolderList">
+                    <button type="button" id="ruleAdd" class="btn btn-primary">Hinzufügen</button>
+                </div>
+                <datalist id="ruleFolderList"></datalist>
+            </div>
+            <div class="box">
+                <h4>Eingebaute Gruppen</h4>
+                <p>Bekannte Seiten und typische Stichwörter. Haken weg = Gruppe wird nicht benutzt. Tag und Ordner kannst du umbenennen, leerer Ordner = nur Tag.</p>
+                <div id="catsList" class="space-y-1.5"></div>
+            </div>
+        </div>
+        <div class="px-4 py-3 border-t border-slate-700/45 flex gap-2 shrink-0">
+            <button type="button" id="rulesCancel" class="btn btn-secondary flex-1">Abbrechen</button>
+            <button type="button" id="rulesSave" class="btn btn-primary flex-1">Speichern</button>
         </div>
     </div>
 </div>
@@ -5438,6 +5584,578 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
         deleteIds(ids);
     });
 
+    /* ---------- Automatisch sortieren ----------
+       Ohne KI und ohne fremde Dienste, alles passiert hier im Browser:
+       1. eingebaute Gruppen: bekannte Domains und typische Stichwörter
+       2. deine bisherige Sortierung: Links derselben Seite, deine Tags und Ordnernamen im Text
+       3. deine eigenen Regeln (gehen immer vor)
+       Erst wird alles nur vorgeschlagen. Übernommen wird, was angehakt bleibt. Tags kommen nur dazu, nie weg. */
+
+    // d = Domains (Unterdomains zählen mit, „name.*“ = jede Endung wie amazon.de oder amazon.com),
+    // w = ganze Wörter („a_b“ = zwei Wörter hintereinander, „wort*“ = Wortanfang), s = Wortteile, die irgendwo stehen dürfen.
+    // Reihenfolge zählt: Passt eine Domain zu mehreren Gruppen, gibt die erste den Ordner vor.
+    const AS_CATS = [
+        { id: 'nsfw', label: 'Erwachsene (NSFW)', t: 'nsfw', f: 'NSFW',
+          d: 'pornhub.com xvideos.com xhamster.com xnxx.com youporn.com redtube.com onlyfans.com chaturbate.com stripchat.com livejasmin.com brazzers.com spankbang.com eporner.com nhentai.net e-hentai.org fansly.com literotica.com motherless.com beeg.com tube8.com porn.com xxx porn sex sexy adult',
+          w: 'sex sexy erotik erotic erotisch nackt nude nudes nsfw milf fetisch fetish bdsm escort sexcam porno pornos hentai',
+          s: 'porn xxx hentai xvideo xhamster onlyfans camgirl' },
+        { id: 'technik', label: 'Technik & Computer', t: 'technik', f: 'Technik',
+          d: 'heise.de golem.de t3n.de chip.de computerbild.de netzwelt.de computerbase.de winfuture.de stadt-bremerhaven.de borncity.com deskmodder.de dr-windows.de android-hilfe.de giga.de connect.de tomshardware.com theverge.com arstechnica.com wired.com ifixit.com notebookcheck.com notebookcheck.net techradar.com howtogeek.com alternativeto.net raspberrypi.com raspberrypi.org support.apple.com support.microsoft.com ubuntuusers.de askubuntu.com superuser.com xda-developers.com',
+          w: 'linux windows android iphone ipad macos ios smartphone laptop raspberry router wlan wifi hardware software treiber firmware homelab nas smarthome smart_home homeassistant home_assistant ubuntu debian' },
+        { id: 'dev', label: 'Programmierung', t: 'dev', f: 'Programmierung',
+          d: 'github.com gitlab.com bitbucket.org codeberg.org stackoverflow.com stackexchange.com serverfault.com developer.mozilla.org npmjs.com pypi.org packagist.org php.net python.org docker.com dev.to codepen.io jsfiddle.net replit.com vercel.com netlify.com w3schools.com selfhtml.org css-tricks.com aws.amazon.com learn.microsoft.com rust-lang.org go.dev nodejs.org react.dev vuejs.org angular.dev angular.io laravel.com symfony.com regex101.com caniuse.com sourceforge.net huggingface.co kaggle.com jetbrains.com code.visualstudio.com readthedocs.io readthedocs.org',
+          w: 'api programmierung programmieren programming javascript typescript python php html css sql docker kubernetes git coding developer entwickler framework sdk json regex devops programmier*' },
+        { id: 'video', label: 'Videos & Streaming', t: 'video', f: 'Videos',
+          d: 'youtube.com youtu.be vimeo.com dailymotion.com twitch.tv netflix.com primevideo.com disneyplus.com ardmediathek.de zdf.de arte.tv joyn.de plus.rtl.de 3sat.de kika.de mediathekview.de rumble.com kick.com odysee.com crunchyroll.com wow.tv magentatv.de waipu.tv zattoo.com paramountplus.com tv.apple.com',
+          w: 'video videos film filme films movie movies trailer mediathek doku dokus dokumentation serie serien livestream kino' },
+        { id: 'musik', label: 'Musik', t: 'musik', f: 'Musik',
+          d: 'spotify.com soundcloud.com bandcamp.com music.apple.com music.youtube.com deezer.com tidal.com last.fm genius.com discogs.com laut.de setlist.fm mixcloud.com beatport.com musicbrainz.org songtexte.com radio.de radio.net tunein.com musescore.com ultimate-guitar.com songsterr.com',
+          w: 'musik music song songs album alben playlist konzert konzerte lyrics songtext songtexte radio gitarre guitar klavier piano akkorde chords' },
+        { id: 'podcast', label: 'Podcasts', t: 'podcast', f: 'Podcasts',
+          d: 'podcasts.apple.com podcasts.google.com pocketcasts.com overcast.fm podbean.com castbox.fm podigee.io podcast.de',
+          w: 'podcast podcasts' },
+        { id: 'news', label: 'Nachrichten', t: 'news', f: 'Nachrichten',
+          d: 'spiegel.de zeit.de faz.net sueddeutsche.de tagesschau.de welt.de bild.de n-tv.de stern.de focus.de tagesspiegel.de taz.de handelsblatt.com nzz.ch derstandard.at diepresse.com orf.at srf.ch zdfheute.de br.de ndr.de wdr.de swr.de mdr.de hr.de rbb24.de deutschlandfunk.de rnd.de merkur.de tz.de t-online.de netzpolitik.org news.google.com news.ycombinator.com bbc.com bbc.co.uk cnn.com nytimes.com theguardian.com reuters.com apnews.com washingtonpost.com aljazeera.com euronews.com correctiv.org watson.de watson.ch 20min.ch heise.de golem.de',
+          w: 'news nachrichten schlagzeilen eilmeldung' },
+        { id: 'social', label: 'Social Media', t: 'social', f: 'Social Media',
+          d: 'facebook.com fb.com instagram.com twitter.com x.com tiktok.com reddit.com pinterest.* tumblr.com mastodon.social threads.net threads.com bsky.app snapchat.com discord.com discord.gg telegram.org t.me whatsapp.com quora.com vk.com 9gag.com imgur.com' },
+        { id: 'jobs', label: 'Job & Karriere', t: 'jobs', f: 'Job',
+          d: 'stepstone.* indeed.* monster.* arbeitsagentur.de glassdoor.* kununu.com karriere.at jobware.de freelancermap.de upwork.com fiverr.com malt.de gulp.de xing.com linkedin.com',
+          w: 'job jobs stellenangebot stellenangebote stellenanzeige karriere bewerbung bewerbungen lebenslauf gehalt career careers praktikum vorstellungsgespräch' },
+        { id: 'shopping', label: 'Shopping', t: 'shopping', f: 'Shopping',
+          d: 'amazon.* ebay.* etsy.com otto.de zalando.* idealo.* geizhals.* aliexpress.com alibaba.com temu.com shein.com kleinanzeigen.de ebay-kleinanzeigen.de mediamarkt.* saturn.de alternate.de mindfactory.de conrad.de ikea.* lidl.* kaufland.* notebooksbilliger.de cyberport.de aboutyou.* galaxus.* digitec.ch thomann.de rebuy.de vinted.* mydealz.de hm.com tchibo.de bonprix.de decathlon.* douglas.de dm.de rossmann.de bol.com coolblue.de',
+          w: 'shop onlineshop webshop kaufen bestellen angebot angebote deal deals gutschein gutscheine rabatt rabatte warenkorb preisvergleich schnäppchen sale' },
+        { id: 'kochen', label: 'Kochen & Rezepte', t: 'kochen', f: 'Kochen',
+          d: 'chefkoch.de lecker.de kitchenstories.com eatsmarter.de essen-und-trinken.de kochbar.de allrecipes.com seriouseats.com bbcgoodfood.com einfachbacken.de springlane.de ichkoche.at gutekueche.at hellofresh.de kptncook.com cookidoo.de rezeptwelt.de oetker.de zuckerjagdwurst.com eat-this.org biancazapatka.com',
+          w: 'rezept rezepte recipe recipes kochen backen kuchen torte torten auflauf suppe salat pasta grillen bbq vegan vegetarisch kochrezept kochrezepte backrezept backrezepte thermomix airfryer heißluftfritteuse plätzchen' },
+        { id: 'reisen', label: 'Reisen', t: 'reisen', f: 'Reisen',
+          d: 'booking.com airbnb.* expedia.* tripadvisor.* holidaycheck.* bahn.de bahn.com flixbus.* lufthansa.com ryanair.com eurowings.com condor.com skyscanner.* kayak.* momondo.* opodo.* trivago.* hrs.de hotels.com tui.com ab-in-den-urlaub.de weg.de lonelyplanet.com oebb.at sbb.ch rome2rio.com flightradar24.com wikivoyage.org urlaubspiraten.de urlaubsguru.de travelbook.de getyourguide.* viator.com hostelworld.com',
+          w: 'reise reisen urlaub hotel hotels flug flüge travel ferienwohnung ferienhaus camping kreuzfahrt roadtrip sehenswürdigkeiten städtereise reiseführer wohnmobil' },
+        { id: 'finanzen', label: 'Geld & Finanzen', t: 'finanzen', f: 'Finanzen',
+          d: 'paypal.com paypal.me sparkasse.de comdirect.de dkb.de ing.de consorsbank.de n26.com commerzbank.de deutsche-bank.de postbank.de vr.de traderepublic.com scalable.capital finanzen.net onvista.de boerse.de ariva.de justetf.com finanztip.de verivox.de smava.de wise.com revolut.com coinbase.com binance.com kraken.com coinmarketcap.com coingecko.com tradingview.com morningstar.* extraetf.com finanzfluss.de elster.de bitpanda.com klarna.com',
+          w: 'bank banking finanzen finance aktie aktien etf etfs depot börse boerse steuer steuern steuererklärung kredit versicherung versicherungen sparen geld rente krypto crypto bitcoin investieren trading dividende dividenden zinsen' },
+        { id: 'behoerden', label: 'Ämter & Behörden', t: 'behörden', f: 'Ämter',
+          d: 'bund.de bundesregierung.de bundestag.de europa.eu gv.at admin.ch ch.ch gov.uk usa.gov deutsche-rentenversicherung.de rundfunkbeitrag.de kba.de bzst.de elster.de',
+          w: 'amt ämter behörde behörden bürgeramt antrag anträge reisepass personalausweis' },
+        { id: 'wissen', label: 'Wissen & Lernen', t: 'wissen', f: 'Wissen',
+          d: 'wikipedia.org wikibooks.org wiktionary.org wikiwand.com britannica.com duden.de dict.cc leo.org linguee.* dwds.de khanacademy.org coursera.org udemy.com edx.org ted.com studysmarter.de sofatutor.com serlo.org planet-wissen.de spektrum.de scinexx.de quarks.de arxiv.org researchgate.net scholar.google.com sciencedirect.com nature.com gutenberg.org projekt-gutenberg.org brilliant.org duolingo.com',
+          w: 'wissen lernen learn learning kurs kurse course courses lexikon wiki studie studien wissenschaft science vokabeln grammatik' },
+        { id: 'anleitung', label: 'Anleitungen (nur Tag)', t: 'anleitung', f: '',
+          d: 'wikihow.com wikihow.* ifixit.com instructables.com',
+          w: 'anleitung anleitungen tutorial tutorials howto how_to guide schritt_für_schritt diy' },
+        { id: 'spiele', label: 'Spiele & Gaming', t: 'gaming', f: 'Spiele',
+          d: 'steampowered.com steamcommunity.com epicgames.com gog.com itch.io ign.com gamestar.de pcgames.de gamepro.de eurogamer.* polygon.com kotaku.com nintendo.* playstation.com xbox.com ea.com ubisoft.com blizzard.com battle.net minecraft.net roblox.com chess.com lichess.org boardgamegeek.com nexusmods.com curseforge.com howlongtobeat.com protondb.com speedrun.com mobygames.com pcgameshardware.de',
+          w: 'game games gaming videospiel videospiele brettspiel brettspiele zocken walkthrough speedrun minecraft pokemon lets_play' },
+        { id: 'sport', label: 'Sport & Fitness', t: 'sport', f: 'Sport',
+          d: 'kicker.de sport1.de sportschau.de ran.de transfermarkt.* bundesliga.com fussball.de espn.com eurosport.* laola1.at strava.com komoot.* dazn.com sport.de weltfussball.de flashscore.* livescore.com 11freunde.de formel1.de formula1.com motorsport-total.com fcbayern.com bvb.de uefa.com fifa.com olympics.com runnersworld.de outdooractive.com bergfex.* alltrails.com',
+          w: 'sport sports fussball fußball football soccer bundesliga champions_league fitness workout joggen marathon radsport tennis handball basketball nba nfl formel_1 wandern wanderung klettern yoga muskelaufbau trainingsplan' },
+        { id: 'gesundheit', label: 'Gesundheit', t: 'gesundheit', f: 'Gesundheit',
+          d: 'netdoktor.de apotheken-umschau.de gesundheit.de onmeda.de doccheck.com aok.de tk.de barmer.de dak.de docmorris.de shop-apotheke.com medpex.de doctolib.de jameda.de rki.de gesund.bund.de mayoclinic.org webmd.com healthline.com nhs.uk medlineplus.gov gelbe-liste.de',
+          w: 'gesundheit health arzt ärzte ärztin doktor krankheit krankheiten symptom symptome medizin medikament medikamente apotheke ernährung diät abnehmen therapie krankenkasse zahnarzt rezeptfrei schmerzen impfung' },
+        { id: 'wohnen', label: 'Wohnen & Garten', t: 'wohnen', f: 'Wohnen',
+          d: 'immobilienscout24.de immowelt.de immonet.de wg-gesucht.de obi.de hornbach.* bauhaus.info toom.de hagebau.de mein-schoener-garten.de westwing.* home24.de wayfair.de houzz.de',
+          w: 'wohnung wohnungen mieten miete immobilie immobilien garten garden pflanzen zimmerpflanzen heimwerken renovieren möbel deko balkon' },
+        { id: 'auto', label: 'Auto & Verkehr', t: 'auto', f: 'Auto',
+          d: 'mobile.de autoscout24.* adac.de auto-motor-und-sport.de autobild.de motor-talk.de carwow.de spritmonitor.de clever-tanken.de mehr-tanken.de tesla.com autozeitung.de motorradonline.de 1000ps.de',
+          w: 'autos kfz pkw fahrzeug fahrzeuge motorrad gebrauchtwagen reifen tanken elektroauto e_auto werkstatt' },
+        { id: 'wetter', label: 'Wetter (nur Tag)', t: 'wetter', f: '',
+          d: 'wetter.com wetter.de wetteronline.de dwd.de kachelmannwetter.com windy.com accuweather.com weather.com meteoblue.com wetter.at',
+          w: 'wetter weather unwetter regenradar wettervorhersage' },
+        { id: 'buecher', label: 'Bücher', t: 'bücher', f: 'Bücher',
+          d: 'goodreads.com thalia.* hugendubel.de buecher.de audible.* storytel.com bookbeat.* kobo.com lovelybooks.de booklooker.de medimops.de zvab.com perlentaucher.de',
+          w: 'buch bücher book books ebook ebooks hörbuch hörbücher roman romane leseprobe audiobook audiobooks' },
+        { id: 'tools', label: 'Werkzeuge & Online-Dienste', t: 'tools', f: 'Tools',
+          d: 'deepl.com translate.google.com docs.google.com drive.google.com dropbox.com onedrive.live.com icloud.com notion.so trello.com canva.com figma.com smallpdf.com ilovepdf.com wetransfer.com bitwarden.com 1password.com mail.google.com outlook.live.com outlook.com gmx.net gmx.de web.de proton.me tuta.com speedtest.net fast.com archive.ph tinyurl.com remove.bg photopea.com excalidraw.com draw.io app.diagrams.net calendar.google.com doodle.com virustotal.com haveibeenpwned.com cloudconvert.com online-convert.com tineye.com openstreetmap.org',
+          w: 'tool tools rechner calculator converter konverter generator umrechner übersetzer translator' }
+    ];
+    // Domain → Gruppen, einmal aufgebaut
+    const AS_DOMAINS = new Map();
+    AS_CATS.forEach((c, i) => {
+        c.words = (c.w || '').split(' ').filter(Boolean).map(w => w.replace(/_/g, ' '));
+        c.subs = (c.s || '').split(' ').filter(Boolean);
+        (c.d || '').split(' ').filter(Boolean).forEach(d => {
+            const list = AS_DOMAINS.get(d) || [];
+            if (!list.includes(i)) list.push(i);
+            AS_DOMAINS.set(d, list);
+        });
+    });
+    // Große Plattformen mit ganz gemischtem Inhalt: Hier lernt die Sortierung nicht „wie die anderen Links dieser Seite“
+    const AS_GENERIC = new Set(('youtube.com youtu.be google.com google.de github.com gitlab.com reddit.com medium.com substack.com amazon.de amazon.com '
+        + 'twitter.com x.com facebook.com instagram.com pinterest.com pinterest.de tiktok.com t.me linkedin.com docs.google.com drive.google.com '
+        + 'web.archive.org archive.org bit.ly tinyurl.com de.wikipedia.org en.wikipedia.org wikipedia.org wordpress.com blogspot.com '
+        + 'stackoverflow.com ebay.de ebay.com spotify.com open.spotify.com vimeo.com twitch.tv').split(' '));
+    // Sammelordner, die als „noch nicht einsortiert“ gelten (wie beim Import)
+    const AS_UNSORTED = new Set(['', 'allgemein', 'lesezeichen-symbolleiste', 'lesezeichenleiste', 'lesezeichen-menü', 'lesezeichenmenü',
+        'weitere lesezeichen', 'bookmarks bar', 'bookmarks toolbar', 'bookmarks menu', 'other bookmarks', 'mobile lesezeichen',
+        'mobile bookmarks', 'favoritenleiste', 'favorites bar', 'importiert', 'imported']);
+    // Eigene Tags und Ordnernamen, die zu allgemein sind, um sie im Text zu suchen
+    const AS_STOP = new Set(('neu alt new old top gut tip tipp tipps todo wichtig später spaeter lesen read later info infos misc sonstiges sonstige '
+        + 'diverses privat private test allgemein archiv archive import importiert imported favoriten favorites links link web www seite seiten '
+        + 'home start main mehr more und and the der die das').split(' '));
+
+    let asRules = null;          // { rules: [...], cats: {...} } vom Server
+    let asRulesOk = false;       // false = konnte nicht geladen werden, dann darf das Regel-Fenster nichts überschreiben
+    let asSugs = [];             // Vorschläge der letzten Berechnung
+    let asRun = 0;
+    const autoOverlay = $('#autoOverlay');
+    const rulesOverlay = $('#rulesOverlay');
+    const asLower = s => String(s || '').toLocaleLowerCase('de');
+
+    // Text eines Links als Wortkette „ wort wort … “: Titel, Beschreibung, Domain (ohne Endung) und Pfad
+    function asText(bm) {
+        let host = '', path = '';
+        try {
+            const u = new URL(bm.url);
+            host = u.hostname.toLowerCase().replace(/^www\./, '');
+            path = u.pathname || '';
+            try { path = decodeURIComponent(path); } catch (_) {}
+            // Dateiendungen wie .html oder .php sagen nichts über den Inhalt
+            path = path.replace(/\.(s?html?|xhtml|php\d?|aspx?|jsp|cgi|pl|cfm)(?=\/|$)/gi, ' ');
+        } catch (_) {}
+        const labels = host.split('.');
+        if (labels.length > 1) labels.pop();
+        const raw = asLower([bm.title || '', bm.description || '', labels.join(' '), path].join(' '));
+        const words = raw.split(/[^a-z0-9äöüß]+/).filter(Boolean);
+        return { host, set: new Set(words), words: ' ' + words.join(' ') + ' ', raw: asLower(host + ' ' + path + ' ' + (bm.title || '')),
+                 full: asLower((bm.url || '') + ' ' + (bm.title || '') + ' ' + (bm.description || '')) };
+    }
+    // Ganzes Wort (oder mehrere Wörter) im Text? „wort*“ = Wortanfang. Mit ends = auch mit Endung (Rezept → Rezepte)
+    const AS_ENDS = ['s', 'e', 'en', 'n', 'er'];
+    function asHasWord(tx, w, ends) {
+        if (w.endsWith('*')) return tx.words.includes(' ' + w.slice(0, -1));
+        if (w.includes(' ')) return tx.words.includes(' ' + w + ' ');
+        if (tx.set.has(w)) return true;
+        return !!ends && w.length >= 4 && AS_ENDS.some(x => tx.set.has(w + x));
+    }
+    // Eingebaute Gruppen zu einer Domain: erst genau (auch Unterdomains), dann „name.*“ für jede Endung
+    function asDomainCats(host) {
+        if (!host) return null;
+        let h = host;
+        while (h) {
+            if (AS_DOMAINS.has(h)) return { key: h, cats: AS_DOMAINS.get(h) };
+            const i = h.indexOf('.');
+            if (i < 0) break;
+            h = h.slice(i + 1);
+        }
+        const labels = host.split('.');
+        labels.pop();
+        if (labels.length >= 2 && /^(co|com|org|net|ac|gv|or|ne)$/.test(labels[labels.length - 1])) labels.pop();
+        const core = labels[labels.length - 1];
+        if (core && AS_DOMAINS.has(core + '.*')) return { key: host, cats: AS_DOMAINS.get(core + '.*') };
+        return null;
+    }
+    // Gruppe mit deinen Änderungen (umbenannt, abgeschaltet)
+    function asCat(c) {
+        const o = (asRules && asRules.cats && asRules.cats[c.id]) || null;
+        if (!o) return { on: true, t: c.t, f: c.f };
+        return { on: !!o.on, t: o.t || '', f: o.f || '' };
+    }
+    const asIsUnsorted = cat => AS_UNSORTED.has(asLower(cat));
+    const asIsDomainRule = m => /^[a-z0-9äöü-]+(\.[a-z0-9äöü-]+)+$/.test(m);
+
+    function asCompute() {
+        const optTags = $('#autoOptTags').checked;
+        const optFolders = $('#autoOptFolders').checked;
+        const optMove = $('#autoOptMove').checked;
+        const all = live();
+        // Ist ein Ordner oder eine Suche aktiv, geht es nur um das, was gerade zu sehen ist
+        const scoped = currentCategory !== 'all' || !!searchQuery;
+        const list = scoped ? bookmarks.filter(matchesFilter) : all;
+
+        // Vorhandene Schreibweisen übernehmen: Tag „Video“ statt „video“, Ordner „Medien > Videos“ statt „Videos“
+        const tagSpelling = new Map();
+        allTags().forEach(t => { const k = asLower(t); if (!tagSpelling.has(k)) tagSpelling.set(k, t); });
+        const folders = getCategories();
+        const folderSize = {};
+        all.forEach(b => { folderSize[b.category] = (folderSize[b.category] || 0) + 1; });
+        const resolveTag = t => tagSpelling.get(asLower(t)) || t;
+        const resolveFolder = f => {
+            const k = asLower(f);
+            let hit = folders.find(x => asLower(x) === k);
+            if (hit) return hit;
+            hit = folders.filter(x => asLower(x.split(SEP).pop()) === k).sort((a, b) => a.split(SEP).length - b.split(SEP).length)[0];
+            return hit || f;
+        };
+
+        // Was du schon sortiert hast, pro Seite: welche Tags und Ordner kommen dort oft vor?
+        const texts = new Map();
+        const byHost = new Map();
+        all.forEach(b => {
+            const tx = asText(b);
+            texts.set(b.id, tx);
+            if (!tx.host) return;
+            let st = byHost.get(tx.host);
+            if (!st) { st = { n: 0, tags: {}, sorted: 0, folders: {} }; byHost.set(tx.host, st); }
+            st.n++;
+            (b.tags || []).forEach(t => { const k = asLower(t); st.tags[k] = (st.tags[k] || 0) + 1; });
+            if (!asIsUnsorted(b.category)) { st.sorted++; st.folders[b.category] = (st.folders[b.category] || 0) + 1; }
+        });
+        // Eigene Tags und Ordnernamen, nach denen im Text gesucht wird
+        const ownTags = [];
+        tagSpelling.forEach((t, k) => {
+            const phrase = k.split(/[^a-z0-9äöüß]+/).filter(Boolean).join(' ');
+            if (phrase.length >= 3 && !/^\d+$/.test(phrase) && !AS_STOP.has(phrase)) ownTags.push({ t, phrase });
+        });
+        const ownFolders = [];
+        folders.forEach(f => {
+            if (asIsUnsorted(f)) return;
+            const phrase = asLower(f.split(SEP).pop()).split(/[^a-z0-9äöüß]+/).filter(Boolean).join(' ');
+            if (phrase.length >= 3 && !/^\d+$/.test(phrase) && !AS_STOP.has(phrase)) ownFolders.push({ f, phrase });
+        });
+        const rules = (asRules && asRules.rules) || [];
+
+        const out = [];
+        list.forEach(b => {
+            const tx = texts.get(b.id) || asText(b);
+            const have = new Set((b.tags || []).map(asLower));
+            const tags = [];       // { t, why }
+            const seen = new Set();
+            const addTag = (t, why) => {
+                if (!t) return;
+                const k = asLower(t);
+                if (have.has(k) || seen.has(k)) return;
+                seen.add(k);
+                tags.push({ t: resolveTag(t), why });
+            };
+            let folder = null;     // { f, why }
+            const setFolder = (f, why) => { if (!folder && f) folder = { f, why }; };
+
+            // 1. eigene Regeln
+            rules.forEach(r => {
+                const m = r.m;
+                const hit = asIsDomainRule(m)
+                    ? (tx.host === m.replace(/^www\./, '') || tx.host.endsWith('.' + m.replace(/^www\./, '')))
+                    : tx.full.includes(m);
+                if (!hit) return;
+                const why = `Regel „${m}“`;
+                (r.t || []).forEach(t => addTag(t, why));
+                if (r.f) setFolder(resolveFolder(r.f), why);
+            });
+
+            // 2. wie die anderen Links dieser Seite
+            const st = tx.host ? byHost.get(tx.host) : null;
+            if (st && !AS_GENERIC.has(tx.host)) {
+                const why = `wie deine anderen Links von ${tx.host}`;
+                Object.entries(st.tags).forEach(([k, n]) => { if (n >= 2 && n / st.n >= 0.4) addTag(tagSpelling.get(k) || k, why); });
+                let best = null, bestN = 0;
+                Object.entries(st.folders).forEach(([f, n]) => { if (n > bestN) { best = f; bestN = n; } });
+                if (best && bestN >= 2 && bestN / st.sorted >= 0.6) setFolder(best, why);
+            }
+
+            // 3. deine Tags und Ordnernamen tauchen im Text auf
+            ownTags.forEach(o => { if (asHasWord(tx, o.phrase, true)) addTag(o.t, 'dein Tag steht im Titel oder in der Adresse'); });
+            if (!folder) {
+                let best = null;
+                ownFolders.forEach(o => {
+                    if (!asHasWord(tx, o.phrase, true)) return;
+                    if (!best || o.phrase.length > best.phrase.length
+                        || (o.phrase.length === best.phrase.length && (folderSize[o.f] || 0) > (folderSize[best.f] || 0))) best = o;
+                });
+                if (best) setFolder(best.f, 'Ordnername steht im Titel oder in der Adresse');
+            }
+
+            // 4. eingebaute Gruppen: erst die Domain, dann Stichwörter
+            const dom = asDomainCats(tx.host);
+            const hits = [];       // { i, why, score }
+            if (dom) dom.cats.forEach(i => hits.push({ i, why: `Domain ${tx.host}`, score: 100 }));
+            AS_CATS.forEach((c, i) => {
+                if (hits.some(h => h.i === i)) return;
+                let score = 0, first = '';
+                c.words.forEach(w => { if (asHasWord(tx, w, false)) { score++; if (!first) first = w.replace(/\*$/, ''); } });
+                c.subs.forEach(s => { if (tx.raw.includes(s)) { score++; if (!first) first = s; } });
+                if (score) hits.push({ i, why: `Stichwort „${first}“`, score });
+            });
+            hits.sort((a, b) => b.score - a.score || a.i - b.i);
+            let builtinTags = 0;
+            hits.forEach(h => {
+                const c = asCat(AS_CATS[h.i]);
+                if (!c.on) return;
+                if (c.t && builtinTags < 3) { const before = tags.length; addTag(c.t, h.why); if (tags.length > before) builtinTags++; }
+                if (c.f) setFolder(resolveFolder(c.f), h.why);
+            });
+
+            // Was davon wird überhaupt vorgeschlagen?
+            const sug = { id: b.id, title: b.title || b.url, url: b.url, host: tx.host, cat: b.category || 'Allgemein', tags: [], folder: null };
+            if (optTags) sug.tags = tags.slice(0, 8).map(x => ({ t: x.t, why: x.why, on: true }));
+            if (optFolders && folder && (optMove || asIsUnsorted(b.category))) {
+                const cur = asLower(b.category || 'Allgemein'), f = asLower(folder.f);
+                if (cur !== f && !cur.startsWith(f + asLower(SEP))) sug.folder = { f: folder.f, why: folder.why, on: true };
+            }
+            if (sug.tags.length || sug.folder) out.push(sug);
+        });
+        out.sort((a, b) => (a.title || '').localeCompare(b.title || '', 'de', { sensitivity: 'base', numeric: true }));
+        return { list: out, total: list.length, scoped };
+    }
+
+    function asRowOn(s) { return s.tags.some(x => x.on) || !!(s.folder && s.folder.on); }
+    function asRenderList(res) {
+        asSugs = res.list;
+        const hint = $('#autoHint');
+        const where = res.scoped ? ' in der aktuellen Ansicht' : '';
+        if (!res.total) hint.textContent = 'Keine Links zum Sortieren.';
+        else if (!asSugs.length) hint.textContent = `Für ${res.total} Link(s)${where} gibt es keine neuen Vorschläge.`;
+        else hint.textContent = `${asSugs.length} von ${res.total} Link(s)${where} bekommen Vorschläge. Antippen schaltet einzelne Vorschläge ab.`;
+        const shown = asSugs.slice(0, 1500);
+        $('#autoList').innerHTML = shown.map((s, i) => {
+            const why = [...new Set(s.tags.map(x => x.why).concat(s.folder ? [s.folder.why] : []))];
+            return `<label class="list-row as-row" data-i="${i}">
+                <input type="checkbox" class="as-check" checked>
+                <span class="grow">
+                    <span class="t1 block">${escapeHtml(s.title)}</span>
+                    <span class="t2 block as-keep">${escapeHtml(s.host || s.url)} · ${escapeHtml(prettyCat(s.cat))}</span>
+                    <span class="as-chips">${s.tags.map((x, k) => `<button type="button" class="bm-chip bm-tag" data-k="t${k}" title="${escapeHtml(x.why)}">#${escapeHtml(x.t)}</button>`).join('')}${
+                        s.folder ? `<button type="button" class="bm-chip as-folder" data-k="f" title="${escapeHtml(s.folder.why)}">→ ${escapeHtml(prettyCat(s.folder.f))}</button>` : ''}</span>
+                    <span class="as-why">${why.map(escapeHtml).join(' · ')}</span>
+                </span>
+            </label>`;
+        }).join('') + (asSugs.length > shown.length
+            ? `<p class="text-sm text-slate-500">Die Liste zeigt die ersten ${shown.length}. Übernommen werden alle ${asSugs.length}, die Schalter oben gelten für alle.</p>` : '');
+        asRenderSummary();
+        asSyncApply();
+    }
+    // Übersicht oben: jeder vorgeschlagene Tag und Ordner mit Anzahl, Antippen schaltet ihn überall an oder aus
+    function asSummaryKeys() {
+        const m = new Map();
+        asSugs.forEach(s => {
+            s.tags.forEach(x => {
+                const k = 't:' + asLower(x.t);
+                const e = m.get(k) || { k, label: '#' + x.t, tag: true, n: 0, on: 0 };
+                e.n++; if (x.on) e.on++; m.set(k, e);
+            });
+            if (s.folder) {
+                const k = 'f:' + asLower(s.folder.f);
+                const e = m.get(k) || { k, label: '→ ' + prettyCat(s.folder.f), tag: false, n: 0, on: 0 };
+                e.n++; if (s.folder.on) e.on++; m.set(k, e);
+            }
+        });
+        return [...m.values()].sort((a, b) => (b.tag - a.tag) || b.n - a.n || a.label.localeCompare(b.label, 'de'));
+    }
+    function asRenderSummary() {
+        const keys = asSummaryKeys();
+        $('#autoSummary').innerHTML = keys.length < 2 ? '' : keys.map(e =>
+            `<button type="button" class="bm-chip ${e.tag ? 'bm-tag' : 'as-folder'}${e.on ? '' : ' as-off'}" data-s="${escapeHtml(e.k)}">${escapeHtml(e.label)} ${e.n}</button>`).join('');
+    }
+    function asPaintRow(i) {
+        const s = asSugs[i];
+        const row = $('#autoList').querySelector(`[data-i="${i}"]`);
+        if (!s || !row) return;
+        s.tags.forEach((x, k) => { const c = row.querySelector(`[data-k="t${k}"]`); if (c) c.classList.toggle('as-off', !x.on); });
+        const fc = row.querySelector('[data-k="f"]');
+        if (fc && s.folder) fc.classList.toggle('as-off', !s.folder.on);
+        const on = asRowOn(s);
+        row.querySelector('.as-check').checked = on;
+        row.classList.toggle('as-dim', !on);
+    }
+    function asSyncApply() {
+        const n = asSugs.filter(asRowOn).length;
+        const btn = $('#autoApply');
+        btn.disabled = n === 0;
+        btn.textContent = n ? `Übernehmen (${n})` : 'Übernehmen';
+    }
+    function asRecompute() {
+        asRenderList(asCompute());
+    }
+    // Lädt die Regeln immer frisch (es könnte sie gerade jemand auf einem anderen Gerät geändert haben)
+    async function asLoadRules() {
+        const res = await api('autosort_rules');
+        if (!res.success) {
+            showToast(res.message || 'Eigene Regeln konnten nicht geladen werden', 'error');
+            if (!asRulesOk) asRules = { rules: [], cats: {} }; // Vorschläge gehen trotzdem, nur ohne deine Regeln
+            return false;
+        }
+        asRules = { rules: Array.isArray(res.rules) ? res.rules : [], cats: (res.cats && typeof res.cats === 'object' && !Array.isArray(res.cats)) ? res.cats : {} };
+        asRulesOk = true;
+        if (res.broken) showToast('Die Datei mit deinen Regeln ist nicht lesbar. Beim nächsten Speichern wird sie neu angelegt.', 'error');
+        return true;
+    }
+    async function openAuto() {
+        const run = ++asRun;
+        $('#autoHint').textContent = 'Lade…';
+        $('#autoSummary').innerHTML = '';
+        $('#autoList').innerHTML = '';
+        asSugs = [];
+        asSyncApply();
+        showOverlay(autoOverlay);
+        await asLoadRules();
+        if (run !== asRun || autoOverlay.classList.contains('hidden')) return;
+        asRecompute();
+    }
+    function closeAuto() {
+        asRun++;
+        hideOverlay(autoOverlay);
+    }
+    $('#btnAutoSort').addEventListener('click', openAuto);
+    $('#autoClose').addEventListener('click', closeAuto);
+    $('#autoCancel').addEventListener('click', closeAuto);
+    autoOverlay.addEventListener('click', e => { if (e.target === autoOverlay) closeAuto(); });
+    ['#autoOptTags', '#autoOptFolders', '#autoOptMove'].forEach(s => $(s).addEventListener('change', () => {
+        if (asRules) asRecompute();
+    }));
+    $('#autoList').addEventListener('click', e => {
+        const chip = e.target.closest('[data-k]');
+        if (!chip) return;
+        e.preventDefault(); // sonst schaltet das Label gleich die ganze Zeile mit um
+        const i = +chip.closest('[data-i]').dataset.i;
+        const s = asSugs[i];
+        if (!s) return;
+        const k = chip.dataset.k;
+        if (k === 'f') { if (s.folder) s.folder.on = !s.folder.on; }
+        else { const x = s.tags[+k.slice(1)]; if (x) x.on = !x.on; }
+        asPaintRow(i);
+        asRenderSummary();
+        asSyncApply();
+    });
+    $('#autoList').addEventListener('change', e => {
+        const cb = e.target.closest('.as-check');
+        if (!cb) return;
+        const i = +cb.closest('[data-i]').dataset.i;
+        const s = asSugs[i];
+        if (!s) return;
+        s.tags.forEach(x => { x.on = cb.checked; });
+        if (s.folder) s.folder.on = cb.checked;
+        asPaintRow(i);
+        asRenderSummary();
+        asSyncApply();
+    });
+    $('#autoSummary').addEventListener('click', e => {
+        const chip = e.target.closest('[data-s]');
+        if (!chip) return;
+        const key = chip.dataset.s;
+        const e2 = asSummaryKeys().find(x => x.k === key);
+        if (!e2) return;
+        const on = e2.on < e2.n; // alles an, wenn mindestens einer aus ist, sonst alles aus
+        asSugs.forEach((s, i) => {
+            let hit = false;
+            s.tags.forEach(x => { if ('t:' + asLower(x.t) === key) { x.on = on; hit = true; } });
+            if (s.folder && 'f:' + asLower(s.folder.f) === key) { s.folder.on = on; hit = true; }
+            if (hit) asPaintRow(i);
+        });
+        asRenderSummary();
+        asSyncApply();
+    });
+    $('#autoApply').addEventListener('click', async () => {
+        const changes = {};
+        let n = 0;
+        asSugs.forEach(s => {
+            const t = s.tags.filter(x => x.on).map(x => x.t);
+            const f = s.folder && s.folder.on ? s.folder.f : '';
+            if (!t.length && !f) return;
+            changes[s.id] = f ? { t, f } : { t };
+            n++;
+        });
+        if (!n) return;
+        const btn = $('#autoApply');
+        btn.disabled = true;
+        btn.textContent = 'Speichere…';
+        const res = await api('autosort_apply', { changes });
+        if (!res.success) { asSyncApply(); showToast(res.message || 'Fehler', 'error'); return; }
+        if (Array.isArray(res.bookmarks)) bookmarks = res.bookmarks;
+        closeAuto();
+        render();
+        const backup = res.backup;
+        showToast(res.message || 'Sortiert', 'success', backup ? {
+            label: 'Rückgängig',
+            fn: async () => applyRes(await api('backup_restore', { name: backup }), 'Zurückgeholt')
+        } : null);
+    });
+
+    /* ----- Eigene Regeln und eingebaute Gruppen bearbeiten ----- */
+    let rulesDraft = [];
+    function renderRules() {
+        const box = $('#rulesList');
+        if (!rulesDraft.length) { box.innerHTML = '<p class="text-sm text-slate-500">Noch keine eigenen Regeln.</p>'; return; }
+        box.innerHTML = rulesDraft.map((r, i) => `
+            <div class="list-row">
+                <div class="grow">
+                    <div class="t1">„${escapeHtml(r.m)}“</div>
+                    <div class="t2 as-keep">${r.t.length ? escapeHtml(r.t.map(t => '#' + t).join(' ')) : ''}${r.t.length && r.f ? ' · ' : ''}${r.f ? '→ ' + escapeHtml(prettyCat(r.f)) : ''}</div>
+                </div>
+                <button type="button" class="btn btn-ghost" data-delrule="${i}" title="Regel löschen" aria-label="Regel löschen">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>`).join('');
+    }
+    function renderCatsEditor() {
+        $('#catsList').innerHTML = AS_CATS.map(c => {
+            const e = asCat(c);
+            return `<label class="as-cat${e.on ? '' : ' as-dim'}" data-cat="${c.id}">
+                <input type="checkbox" class="as-on" ${e.on ? 'checked' : ''}>
+                <span class="as-cat-name">${escapeHtml(c.label)}</span>
+                <input type="text" class="field as-ct" maxlength="40" value="${escapeHtml(e.t)}" placeholder="Tag" aria-label="Tag" autocomplete="off">
+                <input type="text" class="field as-cf" maxlength="250" value="${escapeHtml(e.f)}" placeholder="Ordner" aria-label="Ordner" autocomplete="off" list="ruleFolderList">
+            </label>`;
+        }).join('');
+    }
+    // Neue Regel aus den drei Feldern. Ergebnis: true = übernommen oder nichts eingegeben, false = unvollständig
+    function addRuleFromFields() {
+        const m = $('#ruleM').value.trim().toLocaleLowerCase('de');
+        const t = $('#ruleT').value.split(/[,;\n]+/).map(x => x.trim().replace(/^#/, '').replace(/\s+/g, '-')).filter(Boolean).slice(0, 5);
+        const f = $('#ruleF').value.split('>').map(x => x.trim()).filter(Boolean).join(SEP);
+        if (!m && !t.length && !f) return true;
+        if (!m) { showToast('Stichwort oder Domain eingeben', 'error'); $('#ruleM').focus(); return false; }
+        if (!t.length && !f) { showToast('Mindestens einen Tag oder einen Ordner angeben', 'error'); $('#ruleT').focus(); return false; }
+        if (rulesDraft.length >= 300) { showToast('Höchstens 300 Regeln', 'error'); return false; }
+        rulesDraft.push({ m, t, f: asLower(f) === 'allgemein' ? '' : f });
+        $('#ruleM').value = ''; $('#ruleT').value = ''; $('#ruleF').value = '';
+        renderRules();
+        return true;
+    }
+    async function openRules() {
+        // Ohne sicher geladene Regeln kein Bearbeiten, sonst würde Speichern sie mit einer leeren Liste überschreiben
+        if (!await asLoadRules()) return;
+        rulesDraft = (asRules.rules || []).map(r => ({ m: r.m, t: (r.t || []).slice(), f: r.f || '' }));
+        $('#ruleM').value = ''; $('#ruleT').value = ''; $('#ruleF').value = '';
+        $('#ruleFolderList').innerHTML = getCategories().map(c => `<option value="${escapeHtml(c)}"></option>`).join('');
+        renderRules();
+        renderCatsEditor();
+        showOverlay(rulesOverlay);
+        setTimeout(() => $('#ruleM').focus(), 100);
+    }
+    function closeRules() { hideOverlay(rulesOverlay); }
+    $('#autoRulesBtn').addEventListener('click', openRules);
+    $('#rulesClose').addEventListener('click', closeRules);
+    $('#rulesCancel').addEventListener('click', closeRules);
+    rulesOverlay.addEventListener('click', e => { if (e.target === rulesOverlay) closeRules(); });
+    $('#ruleAdd').addEventListener('click', () => { if (addRuleFromFields()) $('#ruleM').focus(); });
+    ['#ruleM', '#ruleT', '#ruleF'].forEach(s => $(s).addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); if (addRuleFromFields()) $('#ruleM').focus(); }
+    }));
+    $('#rulesList').addEventListener('click', e => {
+        const b = e.target.closest('[data-delrule]');
+        if (!b) return;
+        rulesDraft.splice(+b.dataset.delrule, 1);
+        renderRules();
+    });
+    $('#catsList').addEventListener('change', e => {
+        const cb = e.target.closest('.as-on');
+        if (cb) cb.closest('.as-cat').classList.toggle('as-dim', !cb.checked);
+    });
+    $('#rulesSave').addEventListener('click', async () => {
+        // Steht noch etwas in den Feldern, ist das bestimmt als Regel gemeint
+        if (!addRuleFromFields()) return;
+        const cats = {};
+        $('#catsList').querySelectorAll('.as-cat').forEach(row => {
+            const c = AS_CATS.find(x => x.id === row.dataset.cat);
+            if (!c) return;
+            const on = row.querySelector('.as-on').checked;
+            const t = row.querySelector('.as-ct').value.trim().replace(/^#/, '').replace(/\s+/g, '-');
+            const f = row.querySelector('.as-cf').value.split('>').map(x => x.trim()).filter(Boolean).join(SEP);
+            // Nur speichern, was vom Standard abweicht
+            if (on && t === c.t && f === c.f) return;
+            cats[c.id] = { on, t, f };
+        });
+        const btn = $('#rulesSave');
+        btn.disabled = true;
+        const res = await api('autosort_rules_save', { rules: rulesDraft, cats });
+        btn.disabled = false;
+        if (!res.success) { showToast(res.message || 'Fehler', 'error'); return; }
+        asRules = { rules: Array.isArray(res.rules) ? res.rules : [], cats: (res.cats && typeof res.cats === 'object' && !Array.isArray(res.cats)) ? res.cats : {} };
+        asRulesOk = true;
+        closeRules();
+        showToast(res.message || 'Gespeichert');
+        if (!autoOverlay.classList.contains('hidden')) asRecompute();
+    });
+
     /* ---------- Ordner verwalten ---------- */
     const foldersOverlay = $('#foldersOverlay');
     function renderFolders() {
@@ -5905,8 +6623,10 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
             if (kbHelp(false)) return;
             if (!confirmOverlay.classList.contains('hidden')) { closeConfirm(false); return; }
             if (!dialogOverlay.classList.contains('hidden')) { closeDialog(); return; }
+            // Regeln liegen über „Automatisch sortieren“: erst nur dieses Fenster schließen
+            if (!rulesOverlay.classList.contains('hidden')) { closeRules(); return; }
             if (anyOverlayOpen()) {
-                closeModal(); closeImport(); closeMove(); closeDead(); closeFolders(); closeBackups();
+                closeModal(); closeImport(); closeMove(); closeDead(); closeFolders(); closeBackups(); closeAuto();
                 closeBookmarklet(); closeAccount(); closeTrash(); closeLog(); closeUsers();
                 return;
             }
@@ -6907,6 +7627,37 @@ function lvUiFoot(): void {
         "Zuletzt geöffnet": "Recently opened", "Nach Domain": "By domain", "Nach Ordner": "By folder", "Favoriten immer oben": "Favorites always on top",
         "Gruppieren": "Group", "Domains mit vielen Links": "Domains with many links", "Nach Ordnern": "By folder", "Gar nicht": "No grouping",
         "Werkzeuge": "Tools", "Importieren": "Import", "Export als JSON": "Export as JSON", "Export als HTML (Browser)": "Export as HTML (browser)",
+        // Automatisch sortieren (3.4)
+        "Automatisch sortieren": "Auto-sort", "Übernehmen": "Apply", "Tag": "Tag", "Speichere…": "Saving…",
+        "Vorschläge nach Domain, Stichwörtern, deiner bisherigen Sortierung und deinen eigenen Regeln. Geändert wird erst, wenn du auf „Übernehmen“ tippst, vorher wird automatisch ein Backup angelegt.":
+            "Suggestions based on domain, keywords, how you have sorted so far and your own rules. Nothing changes until you tap “Apply”, and a backup is made automatically first.",
+        "Tags vorschlagen (vorhandene Tags bleiben)": "Suggest tags (existing tags are kept)",
+        "Ordner vorschlagen für unsortierte Links („Allgemein“)": "Suggest folders for unsorted links (“Allgemein”)",
+        "Auch Links umsortieren, die schon in einem Ordner liegen": "Also re-sort links that are already in a folder",
+        "Eigene Regeln und Stichwörter": "Your own rules and keywords", "Eigene Regeln": "Your own rules",
+        "Kommt das Stichwort irgendwo in Adresse, Titel oder Beschreibung vor, gibt es die Tags und den Ordner. Groß- und Kleinschreibung ist egal. Steht ein Punkt drin (z. B. „meinebank.de“), zählt nur die Domain. Deine Regeln gehen immer vor.":
+            "If the keyword appears anywhere in the address, title or description, the link gets the tags and the folder. Upper and lower case do not matter. If it contains a dot (e.g. “mybank.com”), only the domain counts. Your rules always come first.",
+        "Stichwort oder Domain, z. B. xxx": "Keyword or domain, e.g. xxx", "Tags, z. B. nsfw": "Tags, e.g. nsfw",
+        "Ordner (freiwillig)": "Folder (optional)", "Eingebaute Gruppen": "Built-in groups",
+        "Bekannte Seiten und typische Stichwörter. Haken weg = Gruppe wird nicht benutzt. Tag und Ordner kannst du umbenennen, leerer Ordner = nur Tag.":
+            "Well-known sites and typical keywords. Untick = group is not used. You can rename the tag and the folder, empty folder = tag only.",
+        "Noch keine eigenen Regeln.": "No rules of your own yet.", "Regel löschen": "Delete rule",
+        "Keine Links zum Sortieren.": "No links to sort.", "Stichwort oder Domain eingeben": "Enter a keyword or domain",
+        "Mindestens einen Tag oder einen Ordner angeben": "Enter at least one tag or a folder", "Höchstens 300 Regeln": "300 rules at most",
+        "Eigene Regeln konnten nicht geladen werden": "Your own rules could not be loaded",
+        "Die Datei mit deinen Regeln ist nicht lesbar. Beim nächsten Speichern wird sie neu angelegt.": "The file with your rules cannot be read. It will be created anew the next time you save.",
+        "Regeln gespeichert.": "Rules saved.", "Nichts ausgewählt.": "Nothing selected.", "Zu viele Änderungen auf einmal.": "Too many changes at once.",
+        "Nichts geändert, war schon alles so.": "Nothing changed, it was all like that already.", "Sortiert": "Sorted", "Zurückgeholt": "Restored",
+        "vor automatischem Sortieren": "before auto-sort",
+        "dein Tag steht im Titel oder in der Adresse": "your tag appears in the title or address",
+        "Ordnername steht im Titel oder in der Adresse": "the folder name appears in the title or address",
+        "Erwachsene (NSFW)": "Adult (NSFW)", "Technik & Computer": "Tech & computers", "Programmierung": "Programming",
+        "Videos & Streaming": "Videos & streaming", "Musik": "Music", "Nachrichten": "News", "Social Media": "Social media",
+        "Job & Karriere": "Jobs & career", "Kochen & Rezepte": "Cooking & recipes", "Reisen": "Travel", "Geld & Finanzen": "Money & finance",
+        "Ämter & Behörden": "Public authorities", "Wissen & Lernen": "Knowledge & learning", "Anleitungen (nur Tag)": "How-tos (tag only)",
+        "Spiele & Gaming": "Games", "Sport & Fitness": "Sports & fitness", "Gesundheit": "Health", "Wohnen & Garten": "Home & garden",
+        "Auto & Verkehr": "Cars & traffic", "Wetter (nur Tag)": "Weather (tag only)", "Bücher": "Books",
+        "Werkzeuge & Online-Dienste": "Tools & online services",
         "Duplikate entfernen": "Remove duplicates", "Tote Links prüfen": "Check for dead links", "Ordner verwalten": "Manage folders",
         "Papierkorb": "Trash", "Schnell speichern / App": "Quick save / app", "Neu laden": "Reload",
         "Konto & Sicherheit": "Account & security", "Anmeldeversuche": "Sign-in attempts", "Benutzer verwalten": "Manage users",
@@ -7244,6 +7995,19 @@ function lvUiFoot(): void {
         [/^Backup eingespielt \((\d+) Einträge\), der alte Stand liegt bei den Backups\.$/, 'Backup restored ($1 entries), the previous state is among the backups.'],
         [/^(\d+) neue Link\(s\) aus dem Backup übernommen\.$/, '$1 new link(s) taken over from the backup.'],
         [/^(\d+) Links importiert\.(?: (\d+) waren schon da\.)?$/, function (m) { return m[1] + ' links imported.' + (m[2] ? ' ' + m[2] + ' already existed.' : ''); }],
+        // Automatisch sortieren (3.4)
+        [/^Übernehmen \((\d+)\)$/, 'Apply ($1)'],
+        [/^Für (\d+) Link\(s\)( in der aktuellen Ansicht)? gibt es keine neuen Vorschläge\.$/, function (m) {
+            return 'No new suggestions for ' + m[1] + ' link(s)' + (m[2] ? ' in the current view' : '') + '.';
+        }],
+        [/^(\d+) von (\d+) Link\(s\)( in der aktuellen Ansicht)? bekommen Vorschläge\. Antippen schaltet einzelne Vorschläge ab\.$/, function (m) {
+            return m[1] + ' of ' + m[2] + ' link(s)' + (m[3] ? ' in the current view' : '') + ' get suggestions. Tap a suggestion to switch it off.';
+        }],
+        [/^Die Liste zeigt die ersten (\d+)\. Übernommen werden alle (\d+), die Schalter oben gelten für alle\.$/,
+            'The list shows the first $1. All $2 will be applied, the switches at the top apply to all of them.'],
+        [/^Regel „([^“]+)“$/, 'rule “$1”'], [/^Stichwort „([^“]+)“$/, 'keyword “$1”'],
+        [/^Domain ([^\s·]+)$/, 'domain $1'], [/^wie deine anderen Links von ([^\s·]+)$/, 'like your other links from $1'],
+        [/^(\d+) Link\(s\) sortiert: (\d+) mit neuen Tags, (\d+) in andere Ordner\.$/, '$1 link(s) sorted: $2 with new tags, $3 moved to other folders.'],
         [/^(.+) Uhr$/, '$1']
     ];
 
@@ -7282,7 +8046,7 @@ function lvUiFoot(): void {
 
     // Stellen mit eigenen Inhalten (Titel, Ordner, Schlagwörter, Namen) bleiben unangetastet
     var KEEP = 'script,style,textarea,datalist,.bm-title,.bm-domain,.bm-desc,.bm-tag,.user-note,.mono-box,#importFileName,#formCatLabel,'
-        + '[data-movecat],.domain-group-header .truncate,#deadList .truncate,[data-lang]';
+        + '[data-movecat],.domain-group-header .truncate,#deadList .truncate,[data-lang],.as-keep';
     var SPECIAL = { all: 1, favorites: 1, dead: 1 };
     function keep(el) {
         if (!el || el.closest(KEEP)) return true;
@@ -7340,4 +8104,74 @@ function lvUiFoot(): void {
 })();
 LVJS;
     echo '</script>' . "\n";
+}
+
+/* =====================================================================
+   Neu in 3.4: Automatisch sortieren
+   ---------------------------------------------------------------------
+   Ohne KI und ohne fremde Dienste. Die Vorschläge rechnet der Browser
+   aus (Domain-Liste, Stichwörter, deine bisherige Sortierung, deine
+   eigenen Regeln). Hier liegen nur die eigenen Regeln: pro Benutzer
+   eine Datei autosort.json, verschlüsselt wie die Links selbst.
+   ===================================================================== */
+
+function lvAutoSortFile(): string { return lvUserDir() . '/autosort.json'; }
+
+/** Lässt nur saubere Regeln durch. rules: [{m, t[], f}], cats: {id: {on, t, f}} (Änderungen an den eingebauten Gruppen) */
+function lvAutoSortClean($in): array {
+    $rules = [];
+    $seen = [];
+    $list = (is_array($in) && isset($in['rules']) && is_array($in['rules'])) ? $in['rules'] : [];
+    foreach ($list as $r) {
+        if (!is_array($r)) continue;
+        $m = cleanText($r['m'] ?? '', 100);
+        $m = function_exists('mb_strtolower') ? mb_strtolower($m, 'UTF-8') : strtolower($m);
+        if ($m === '') continue;
+        $tags = array_slice(cleanTags($r['t'] ?? []), 0, 5);
+        $f = trim((string)($r['f'] ?? ''));
+        $f = $f === '' ? '' : cleanCategory($f);
+        if ($f === 'Allgemein') $f = '';
+        if (!$tags && $f === '') continue;
+        $key = $m . "\n" . implode(',', $tags) . "\n" . $f;
+        if (isset($seen[$key])) continue;
+        $seen[$key] = true;
+        $rules[] = ['m' => $m, 't' => $tags, 'f' => $f];
+        if (count($rules) >= 300) break;
+    }
+    $cats = [];
+    $list = (is_array($in) && isset($in['cats']) && is_array($in['cats'])) ? $in['cats'] : [];
+    foreach ($list as $id => $c) {
+        if (!is_string($id) || !preg_match('/^[a-z]{2,20}$/', $id) || !is_array($c)) continue;
+        $t = cleanTags([(string)($c['t'] ?? '')]);
+        $f = trim((string)($c['f'] ?? ''));
+        $f = $f === '' ? '' : cleanCategory($f);
+        if ($f === 'Allgemein') $f = '';
+        $cats[$id] = ['on' => !empty($c['on']), 't' => $t ? $t[0] : '', 'f' => $f];
+        if (count($cats) >= 60) break;
+    }
+    return ['rules' => $rules, 'cats' => (object)$cats];
+}
+
+/** @return array{rules: array, cats: object, broken: bool} broken = Datei da, aber nicht lesbar */
+function lvAutoSortLoad(): array {
+    $file = lvAutoSortFile();
+    if (!is_file($file)) return ['rules' => [], 'cats' => (object)[], 'broken' => false];
+    $json = lvDecodeStored((string)@file_get_contents($file));
+    $data = $json !== null ? json_decode($json, true) : null;
+    if (!is_array($data)) return ['rules' => [], 'cats' => (object)[], 'broken' => true];
+    return lvAutoSortClean($data) + ['broken' => false];
+}
+
+function lvAutoSortSave(array $rs): bool {
+    $dir = lvUserDir();
+    if (!is_dir($dir) || !is_writable($dir)) return false;
+    $json = json_encode(['v' => 1, 'rules' => $rs['rules'], 'cats' => $rs['cats']], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($json === false) return false;
+    $payload = lvEncryptPayload($json);
+    $file = lvAutoSortFile();
+    $tmp = $file . '.tmp.' . bin2hex(random_bytes(4));
+    if (@file_put_contents($tmp, $payload, LOCK_EX) === false) { @unlink($tmp); return false; }
+    @chmod($tmp, 0600);
+    if (!@rename($tmp, $file)) { @unlink($tmp); return false; }
+    return true;
 }
