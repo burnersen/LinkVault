@@ -16,6 +16,7 @@ Upload `index.php`, open it in the browser, create the first account. That's the
 
 - Bookmarks with nested folders, tags, favourites, notes, full-text search
 - Import from browser bookmark files (HTML, including very large ones and Firefox notes), export as HTML or JSON
+- Three views: cards, list and tiles. Each of them shows a link's address at a glance, on phones too.
 - Trash with 30 days retention, duplicate finder, dead-link checker
 - Auto-sort (Tools → Auto-sort): suggests tags and folders without any AI and without outside services. It goes by groups of domains and keywords (YouTube → video, GitHub → dev, “*xxx*” → NSFW, …) and the way you have sorted so far. The groups are one single list you can change, extend and delete completely, “Restore defaults” brings back the original. You get a preview to tick off first, a backup is made before anything changes, and there is an undo button afterwards.
 - Tag bar below the folders: tap a tag to filter by it, several can be combined (can be switched off under View)
@@ -84,6 +85,8 @@ Test it. This must **not** return 200:
 curl -sS -o /dev/null -w '%{http_code}\n' https://your-domain.example/linkvault/data/lv_auth.json
 ```
 
+LinkVault checks this itself as well: if `data/` can be fetched from outside, the administrator gets a clear warning after signing in, every time, until the folder is locked.
+
 Everything in `data/` is encrypted or hashed, so a leak is not an instant disaster. But it would hand an attacker the material for offline password guessing, and that is exactly what you don't want.
 
 ## Accounts and roles
@@ -124,7 +127,7 @@ random 256-bit data key (DEK) ◀──unwrapped with AES-256-GCM─────
 | `…/state.json` | account status (pending / active / blocked), timestamps, sealed registration note | Status and timestamps yes |
 | `…/attempts.log` | login history: time, IP address, attempted name | No, if `sodium` is available (see below) |
 | `…/favicon_cache/` | site icons | No (AES-256-GCM). File names are keyed HMACs, so they don't reveal the domain. |
-| `data/throttle/` | failed-login counters, file names are SHA-256 hashes of the address | Counters yes, addresses no |
+| `data/throttle/` | failed-login counters and markers for known connections, file names are SHA-256 hashes of the address | Counters yes, addresses no |
 | `data/sessions/` | PHP sessions | The data key in there is encrypted (see below) |
 
 There is nothing else. No database and no log file that contains your URLs or the domains you bookmarked.
@@ -144,7 +147,7 @@ After login the data key has to be available for each request. It is **not** sto
 
 - Passwords: at least 12 characters with letters and digits. Stored only as a `password_hash()` hash.
 - Rate limiting per address with growing lock times (3 s, 10 s, 30 s, 60 s … up to 15 minutes). IPv6 addresses are grouped by /64. Only `REMOTE_ADDR` is trusted, never `X-Forwarded-For`.
-- A global brake slows everyone down briefly when failed logins pile up from many addresses.
+- A global brake slows everyone down briefly when failed logins pile up from many addresses. Connections that someone signed in from successfully during the last 30 days are exempt, so nobody can lock you out with a flood of failed attempts.
 - Unknown user names take the same time as wrong passwords, and the reason for a refusal (pending, blocked) is only revealed after the correct password.
 - **Two-factor login (TOTP, RFC 6238)**: works with Aegis, 2FAS, Google Authenticator and so on. The TOTP secret is stored encrypted with the data key. Each code is accepted only once.
 - **Recovery code**: 24 random characters (120 bits). It wraps a second copy of the data key. Using it sets a new password, invalidates the code and switches TOTP off (a lost phone is the usual reason to need it).

@@ -14,6 +14,7 @@ Eine Lesezeichen-Verwaltung zum Selbsthosten in **einer einzigen PHP-Datei**. Ke
 
 - Lesezeichen mit verschachtelten Ordnern, Schlagwörtern, Favoriten, Notizen und Volltextsuche
 - Import aus Lesezeichen-Dateien der Browser (HTML, auch sehr große, samt Notizen aus Firefox), Export als HTML oder JSON
+- Drei Ansichten: Karten, Liste und Kacheln. Die Adresse eines Links ist in jeder davon auf einen Blick zu sehen, auch am Handy.
 - Papierkorb mit 30 Tagen Aufbewahrung, Duplikat-Suche, Prüfung auf tote Links
 - Automatisch sortieren (Werkzeuge → Automatisch sortieren): schlägt Tags und Ordner vor, ganz ohne KI und ohne fremde Dienste. Grundlage sind Gruppen mit Domains und Stichwörtern (YouTube → Video, Chefkoch → Kochen, „*xxx*“ → NSFW, …) und deine bisherige Sortierung. Die Gruppen sind eine einzige Liste, die du komplett ändern, ergänzen und löschen kannst, „Standard wiederherstellen“ holt die Originalfassung zurück. Erst kommt eine Vorschau zum Abhaken, vorher wird ein Backup angelegt, danach gibt es „Rückgängig“.
 - Tag-Leiste unter den Ordnern: Antippen filtert nach dem Tag, mehrere lassen sich kombinieren (abschaltbar unter Ansicht)
@@ -82,6 +83,8 @@ Bitte testen. Hier darf **keine** 200 herauskommen:
 curl -sS -o /dev/null -w '%{http_code}\n' https://deine-domain.example/linkvault/data/lv_auth.json
 ```
 
+LinkVault prüft das auch selbst: Ist `data/` von außen abrufbar, bekommt der Administrator nach dem Anmelden einen deutlichen Hinweis, und zwar so lange, bis der Ordner gesperrt ist.
+
 Alles in `data/` ist verschlüsselt oder gehasht, ein Leck wäre also nicht sofort eine Katastrophe. Ein Angreifer hätte damit aber das Material, um Passwörter in Ruhe offline durchzuprobieren, und genau das soll er nicht bekommen.
 
 ## Konten und Rollen
@@ -122,7 +125,7 @@ zufälliger 256-Bit-Datenschlüssel (DEK) ◀──mit AES-256-GCM ausgepackt─
 | `…/state.json` | Stand des Kontos (wartet / aktiv / gesperrt), Zeitpunkte, verschlossene Nachricht der Anfrage | Stand und Zeitpunkte ja |
 | `…/attempts.log` | Anmelde-Protokoll: Zeit, IP-Adresse, versuchter Name | Nein, sofern `sodium` vorhanden ist (siehe unten) |
 | `…/favicon_cache/` | Icons der Seiten | Nein (AES-256-GCM). Die Dateinamen sind mit dem Schlüssel gebildete Prüfsummen (HMAC) und verraten die Domain nicht. |
-| `data/throttle/` | Zähler für Fehlversuche, Dateinamen sind SHA-256-Prüfsummen der Adresse | Zähler ja, Adressen nein |
+| `data/throttle/` | Zähler für Fehlversuche und Merker für bekannte Anschlüsse, Dateinamen sind SHA-256-Prüfsummen der Adresse | Zähler ja, Adressen nein |
 | `data/sessions/` | PHP-Sitzungen | Der Datenschlüssel darin ist verschlüsselt (siehe unten) |
 
 Mehr gibt es nicht. Keine Datenbank und keine Protokolldatei, in der deine Adressen oder die gespeicherten Domains stehen.
@@ -142,7 +145,7 @@ Nach der Anmeldung muss der Datenschlüssel bei jeder Anfrage verfügbar sein. E
 
 - Passwörter: mindestens 12 Zeichen mit Buchstaben und Zahlen. Gespeichert wird nur ein Hash aus `password_hash()`.
 - Bremse pro Adresse mit wachsenden Sperrzeiten (3 s, 10 s, 30 s, 60 s … bis 15 Minuten). IPv6-Adressen werden als /64-Netz zusammengefasst. Vertraut wird nur `REMOTE_ADDR`, nie `X-Forwarded-For`.
-- Eine Gesamtbremse verlangsamt kurz alle, wenn sich Fehlversuche von vielen Adressen häufen.
+- Eine Gesamtbremse verlangsamt kurz alle, wenn sich Fehlversuche von vielen Adressen häufen. Anschlüsse, von denen sich in den letzten 30 Tagen jemand richtig angemeldet hat, sind davon ausgenommen. So kann dich niemand mit einer Flut von Fehlversuchen aussperren.
 - Unbekannte Benutzernamen kosten dieselbe Zeit wie falsche Passwörter. Warum eine Anmeldung abgelehnt wird (wartet, gesperrt), erfährt man erst nach dem richtigen Passwort.
 - **Zwei-Faktor-Anmeldung (TOTP, RFC 6238)**: läuft mit Aegis, 2FAS, Google Authenticator und ähnlichen. Das TOTP-Geheimnis ist mit dem Datenschlüssel verschlüsselt gespeichert. Jeder Code gilt nur einmal.
 - **Wiederherstellungscode**: 24 zufällige Zeichen (120 Bit). Er verpackt eine zweite Kopie des Datenschlüssels. Wer ihn einsetzt, vergibt ein neues Passwort, der Code ist danach verbraucht und TOTP wird abgeschaltet (meist braucht man ihn, weil das Handy weg ist).
