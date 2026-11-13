@@ -23,7 +23,7 @@ error_reporting(E_ALL);
 ini_set('display_errors', 0);
 date_default_timezone_set('Europe/Berlin');
 
-define('LV_VERSION', '3.4.0');
+define('LV_VERSION', '3.5.0');
 define('LV_DATA_DIR', __DIR__ . '/data');
 define('USERS_DIR', LV_DATA_DIR . '/users');       // weitere Benutzer: jeder hat hier seinen eigenen Ordner
 define('SESSION_DIR', LV_DATA_DIR . '/sessions');
@@ -1226,7 +1226,10 @@ function lvThrottleUntil(string $file): int {
  * @return string|null Fehlermeldung wenn gesperrt, sonst null
  */
 function lvLoginThrottleCheck(): ?string {
-    $until = max(lvThrottleUntil(lvThrottlePath()), lvThrottleUntil(lvThrottleDir() . '/global.json'));
+    $until = lvThrottleUntil(lvThrottlePath());
+    // Die Pause für alle gilt nicht für Anschlüsse, von denen sich kürzlich jemand richtig angemeldet hat.
+    // Sonst könnte ein Angreifer mit vielen Adressen den Besitzer immer wieder kurz aussperren.
+    if (!lvKnownClient()) $until = max($until, lvThrottleUntil(lvThrottleDir() . '/global.json'));
     $wait = $until - time();
     if ($wait <= 0) return null;
     if ($wait >= 60) {
@@ -1234,6 +1237,16 @@ function lvLoginThrottleCheck(): ?string {
         return "Zu viele Fehlversuche. Bitte in ca. {$m} Minute(n) erneut versuchen.";
     }
     return "Zu viele Fehlversuche. Bitte in {$wait} Sekunde(n) erneut versuchen.";
+}
+
+/** Anschlüsse mit einer erfolgreichen Anmeldung in den letzten 30 Tagen (gespeichert wird nur eine Prüfsumme). */
+function lvKnownClientPath(): string {
+    return lvThrottleDir() . '/ok_' . hash('sha256', lvClientIp()) . '.json';
+}
+
+function lvKnownClient(): bool {
+    $t = (int)@filemtime(lvKnownClientPath());
+    return $t > time() - 30 * 86400;
 }
 
 function lvLoginThrottleFail(): void {
@@ -1270,6 +1283,7 @@ function lvLoginThrottleFail(): void {
 /** Nach erfolgreichem Login: eigene Sperre weg + Altlasten löschen */
 function lvLoginThrottleClear(): void {
     @unlink(lvThrottlePath());
+    if (lvRealIp() !== '0') @file_put_contents(lvKnownClientPath(), '1', LOCK_EX);
     lvLoginThrottlePrune();
 }
 
@@ -1286,6 +1300,9 @@ function lvLoginThrottlePrune(): void {
     }
     foreach (glob(lvThrottleDir() . '/reg_*.json') ?: [] as $f) {
         if ((int)@filemtime($f) < $now - 86400) @unlink($f);
+    }
+    foreach (glob(lvThrottleDir() . '/ok_*.json') ?: [] as $f) {
+        if ((int)@filemtime($f) < $now - 30 * 86400) @unlink($f);
     }
 }
 
@@ -1386,11 +1403,40 @@ function lvLoginNotice(array $cfg, string $dek): array {
 /* ---------- Abrufe nach draußen (Titel, Favicons, Link-Check), geschützt gegen Umwege ins interne Netz ---------- */
 
 function lvIpIsPublic(string $ip): bool {
-    if (stripos($ip, '::ffff:') === 0 && strpos($ip, '.') !== false) $ip = substr($ip, 7);
+    $bin = @inet_pton($ip);
+    if ($bin === false) return false;
+    if (strlen($bin) === 16) {
+        // IPv6-Adressen, in denen eine IPv4-Adresse steckt, in jeder Schreibweise auspacken und als IPv4 prüfen:
+        // ::ffff:a.b.c.d (auch hex geschrieben), ::a.b.c.d, NAT64 (64:ff9b::/96 und 64:ff9b:1::/48), 6to4 (2002::/16)
+        $v4 = null;
+        if (strncmp($bin, str_repeat("\0", 10) . "\xff\xff", 12) === 0 || strncmp($bin, str_repeat("\0", 12), 12) === 0
+            || strncmp($bin, "\x00\x64\xff\x9b" . str_repeat("\0", 8), 12) === 0) {
+            $v4 = substr($bin, 12, 4);
+        } elseif (strncmp($bin, "\x00\x64\xff\x9b\x00\x01", 6) === 0) {
+            return false; // lokales NAT64: wohin das führt, lässt sich von hier nicht sagen
+        } elseif (strncmp($bin, "\x20\x02", 2) === 0) {
+            $v4 = substr($bin, 2, 4);
+        }
+        if ($v4 !== null) {
+            if ($v4 === "\0\0\0\0" || $v4 === "\0\0\0\1") return false; // :: und ::1
+            $ip = (string)inet_ntop($v4);
+        } else {
+            $ip = (string)inet_ntop($bin);
+            $b0 = ord($bin[0]); $b1 = ord($bin[1]);
+            if (($b0 & 0xFE) === 0xFC) return false;                 // fc00::/7 privat
+            if ($b0 === 0xFE && ($b1 & 0xC0) === 0x80) return false; // fe80::/10 link-lokal
+            if ($b0 === 0xFE && ($b1 & 0xC0) === 0xC0) return false; // fec0::/10 site-lokal (alt)
+            if ($b0 === 0xFF) return false;                          // Multicast
+        }
+    }
     if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) return false;
     if (strpos($ip, ':') === false) {
         $n = ip2long($ip);
-        if ($n !== false && ($n & 0xFFC00000) === 0x64400000) return false; // 100.64.0.0/10
+        if ($n === false) return false;
+        if (($n & 0xFFC00000) === 0x64400000) return false; // 100.64.0.0/10 (Carrier-NAT)
+        if (($n & 0xFFFFFF00) === 0xC0000000) return false; // 192.0.0.0/24 (Protokoll-Zuweisungen)
+        if (($n & 0xFFFE0000) === 0xC6120000) return false; // 198.18.0.0/15 (Testnetze)
+        if (($n & 0xF0000000) === 0xE0000000) return false; // 224.0.0.0/4 (Multicast)
     }
     return true;
 }
@@ -1433,6 +1479,16 @@ function lvAbsUrl(string $base, string $loc): string {
 }
 
 /** cURL-Handle, fest auf die vorher geprüfte IP-Adresse genagelt. $state sammelt body + Weiterleitungsziel. */
+/** Eindeutige Nummer eines cURL-Handles (bis PHP 7.4 eine Ressource, ab PHP 8 ein Objekt). */
+function lvCurlId($ch): int {
+    return is_object($ch) ? spl_object_id($ch) : (int)$ch;
+}
+
+/** Ab PHP 8 räumt sich ein Handle selbst weg, curl_close() ist dort ohne Wirkung und ab 8.5 veraltet. */
+function lvCurlClose($ch): void {
+    if (PHP_VERSION_ID < 80000) curl_close($ch);
+}
+
 function lvCurlMake(string $url, array $p, string $ip, bool $head, int $limit, int $timeout, string $accept, array &$state) {
     $state = ['body' => '', 'loc' => ''];
     $ch = curl_init($url);
@@ -1493,7 +1549,7 @@ function lvSafeFetch(string $url, array $o = []): array {
             $res['errno'] = $res['code'] > 0 ? 0 : (int)curl_errno($ch);
             $res['body'] = $state['body'];
             $loc = $state['loc'];
-            curl_close($ch);
+            lvCurlClose($ch);
         } else {
             // Ohne cURL: direkt die geprüfte IP ansprechen, damit PHP den Namen nicht ein zweites Mal auflöst
             $host = trim($p['host'], '[]');
@@ -1612,18 +1668,18 @@ function lvMultiProbe(array $urls, bool $head): array {
         $errnos = [];
         do {
             $status = curl_multi_exec($mh, $running);
-            while ($info = curl_multi_info_read($mh)) $errnos[spl_object_id($info['handle'])] = $info['result'];
+            while ($info = curl_multi_info_read($mh)) $errnos[lvCurlId($info['handle'])] = $info['result'];
             if ($running) curl_multi_select($mh, 1.0);
         } while ($running && $status === CURLM_OK);
-        while ($info = curl_multi_info_read($mh)) $errnos[spl_object_id($info['handle'])] = $info['result'];
+        while ($info = curl_multi_info_read($mh)) $errnos[lvCurlId($info['handle'])] = $info['result'];
         $next = [];
         foreach ($hs as $k => $ch) {
             $code = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-            $errno = $code > 0 ? 0 : (int)($errnos[spl_object_id($ch)] ?? 0);
+            $errno = $code > 0 ? 0 : (int)($errnos[lvCurlId($ch)] ?? 0);
             if ($code >= 300 && $code < 400 && $states[$k]['loc'] !== '') $next[$k] = lvAbsUrl($pending[$k], $states[$k]['loc']);
             else $out[$k] = ['code' => $code, 'errno' => $errno];
             curl_multi_remove_handle($mh, $ch);
-            curl_close($ch);
+            lvCurlClose($ch);
         }
         curl_multi_close($mh);
         $pending = $next;
@@ -2784,9 +2840,16 @@ lvSecurityHeaders(true);
 header('Cache-Control: no-store, no-cache, must-revalidate, private');
 header('Pragma: no-cache');
 
+/** Pfad dieser Seite ohne Abfrage. Immer genau ein Schrägstrich vorn, sonst läse der Browser „//name“ als fremde Adresse. */
+function lvSelfPath(): string {
+    $path = strtok((string)($_SERVER['REQUEST_URI'] ?? '/'), '?') ?: '/';
+    $path = preg_replace('/[\x00-\x20\x7f\\\\]/', '', $path) ?? '';
+    return '/' . ltrim($path, '/');
+}
+
 // Vom Schnell-Speichern-Knopf oder „Teilen“ mitgebrachte Adresse über die Anmeldung retten
 function lvBackUrl(): string {
-    $back = strtok((string)($_SERVER['REQUEST_URI'] ?? '/'), '?') ?: '/';
+    $back = lvSelfPath();
     $keep = [];
     foreach (['add', 'title', 'url', 'text', 'new'] as $k) {
         if (isset($_GET[$k]) && is_string($_GET[$k]) && $_GET[$k] !== '') $keep[$k] = substr($_GET[$k], 0, 2000);
@@ -2890,7 +2953,7 @@ if (LV_AUTH_ENABLED && !lvIsLoggedIn()) {
         ? 'Erster Start: Benutzer anlegen. Dein Passwort schützt Login und Verschlüsselung.'
         : ($recoverMode ? 'Mit dem Wiederherstellungscode ein neues Passwort setzen.'
         : ($registerMode ? 'Such dir Namen und Passwort aus. Danach muss dich der Administrator erst freischalten.' : 'Bitte anmelden'));
-    $selfUrl = strtok((string)($_SERVER['REQUEST_URI'] ?? '/'), '?') ?: '/';
+    $selfUrl = lvSelfPath();
     ?><!DOCTYPE html>
 <html lang="de">
 <head>
@@ -3624,8 +3687,12 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
         body.view-list .card-actions { display: none; flex-basis: 100%; }
         body.view-list .bookmark-card.expanded .card-actions { display: flex; }
         @media (max-width: 640px) {
-            body.view-list .bm-domain, body.view-list .bm-meta .bm-tag { display: none; }
-            body.view-list .bm-meta { max-width: 38%; }
+            /* Am Handy: Titel und darunter die Adresse, der Ordner steht rechts daneben */
+            body.view-list .bm-text { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 0.5rem; align-items: center; }
+            body.view-list .bm-title { grid-column: 1; grid-row: 1; min-width: 0; }
+            body.view-list .bm-domain { grid-column: 1; grid-row: 2; }
+            body.view-list .bm-meta { grid-column: 2; grid-row: 1 / span 2; max-width: 6.5rem; margin: 0; }
+            body.view-list .bm-meta .bm-tag { display: none; }
         }
         @media (hover: hover) and (min-width: 900px) {
             body.view-list .bm-more { display: none; }
@@ -3639,27 +3706,29 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
             }
         }
 
-        /* Ansicht „Kompakt“: kleine Kacheln, nur Icon + Titel */
-        body.view-compact .bookmarks-grid, body.view-compact .domain-group-body {
+        /* Ansicht „Kacheln“: schmale Kacheln nebeneinander, immer mit Titel und Adresse. Der Rest steckt hinter den drei Punkten. */
+        body.view-tiles .bookmarks-grid, body.view-tiles .domain-group-body {
             grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 0.3rem;
         }
         @media (min-width: 560px) {
-            body.view-compact .bookmarks-grid, body.view-compact .domain-group-body {
-                grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)) !important;
+            body.view-tiles .bookmarks-grid, body.view-tiles .domain-group-body {
+                grid-template-columns: repeat(auto-fill, minmax(215px, 1fr)) !important;
             }
         }
-        body.view-compact .bookmark-card { padding: 0.35rem 0.4rem 0.35rem 0.5rem !important; }
-        body.view-compact .bookmark-card:hover { transform: none; }
-        body.view-compact .bm-main { align-items: center; gap: 0.4rem; }
-        body.view-compact .favicon { width: 18px; height: 18px; padding: 1px; border-radius: 4px; }
-        body.view-compact .bm-title { font-size: 0.8rem; }
-        body.view-compact .bm-domain, body.view-compact .bm-desc, body.view-compact .bm-meta, body.view-compact .card-actions { display: none; }
-        body.view-compact .bm-more { display: inline-flex; flex-basis: 1.5rem; width: 1.5rem; height: 1.5rem; }
-        body.view-compact .bookmark-card.expanded { grid-column: 1 / -1; }
-        body.view-compact .bookmark-card.expanded .bm-domain { display: block; }
-        body.view-compact .bookmark-card.expanded .bm-meta, body.view-compact .bookmark-card.expanded .card-actions { display: flex; }
-        body.view-compact .bookmark-card.expanded .bm-desc { display: -webkit-box; }
-        body.view-compact .bookmark-card.expanded .bm-title { white-space: normal; }
+        body.view-tiles .bookmark-card { padding: 0.4rem 0.35rem 0.4rem 0.5rem !important; }
+        body.view-tiles .bookmark-card:hover { transform: none; }
+        body.view-tiles .bm-main { align-items: center; gap: 0.45rem; }
+        body.view-tiles .favicon { width: 22px; height: 22px; padding: 2px; border-radius: 5px; }
+        body.view-tiles .bm-title { font-size: 0.8rem; }
+        body.view-tiles .bm-domain { margin-top: 0; }
+        body.view-tiles .bm-desc, body.view-tiles .bm-meta, body.view-tiles .card-actions { display: none; }
+        body.view-tiles .bm-more { display: inline-flex; flex-basis: 1.5rem; width: 1.5rem; height: 1.5rem; }
+        body.view-tiles .bookmark-card.expanded { grid-column: 1 / -1; }
+        body.view-tiles .bookmark-card.expanded .bm-meta, body.view-tiles .bookmark-card.expanded .card-actions { display: flex; }
+        body.view-tiles .bookmark-card.expanded .bm-desc { display: -webkit-box; }
+        body.view-tiles .bookmark-card.expanded .bm-title, body.view-tiles .bookmark-card.expanded .bm-domain { white-space: normal; overflow-wrap: anywhere; }
+        /* Ein toter oder unklarer Link fällt auch ohne aufgeklappte Kachel auf */
+        body.view-tiles .bookmark-card.has-warn:not(.expanded) { border-color: rgba(244, 63, 94, 0.45); }
 
         /* Menüs */
         #viewMenu { z-index: 100 !important; background: rgba(15, 23, 42, 0.97); box-shadow: 0 12px 40px -8px rgba(0,0,0,0.55), 0 0 0 1px rgba(51,65,85,0.5); }
@@ -3782,7 +3851,7 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
                         <div class="menu-label">Darstellung</div>
                         <button type="button" class="menu-opt" data-view="cards">Karten</button>
                         <button type="button" class="menu-opt" data-view="list">Liste</button>
-                        <button type="button" class="menu-opt" data-view="compact">Kompakt</button>
+                        <button type="button" class="menu-opt" data-view="tiles">Kacheln</button>
                         <div class="menu-sep"></div>
                         <div class="menu-label">Sortierung</div>
                         <button type="button" class="menu-opt" data-sort="title">A → Z</button>
@@ -4482,7 +4551,8 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
     let currentCategory = store.get('lv_cat', 'all');
     let searchQuery = '';
     let sortMode = oneOf(store.get('lv_sort', 'title'), ['title', 'title-desc', 'newest', 'oldest', 'clicks', 'opened', 'domain', 'folder'], 'title');
-    let viewMode = oneOf(store.get('lv_view', 'cards'), ['cards', 'list', 'compact'], 'cards');
+    // „Kompakt“ (bis 3.4) zeigte keine Adresse und heißt jetzt „Kacheln“
+    let viewMode = oneOf({ compact: 'tiles' }[store.get('lv_view', 'cards')] || store.get('lv_view', 'cards'), ['cards', 'list', 'tiles'], 'cards');
     let groupMode = oneOf(store.get('lv_group', 'domain'), ['domain', 'folder', 'none'], 'domain');
     let favTop = store.get('lv_favtop', '1') === '1';
     let tagBarOn = store.get('lv_tagbar', '1') !== '0';
@@ -4900,7 +4970,7 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
         const card = document.createElement('article');
         const isSelected = selected.has(bm.id);
         const domain = getDomain(bm.url);
-        card.className = `bookmark-card glass rounded-xl ${bm.favorite ? 'favorite' : ''} ${isSelected ? 'selected' : ''} ${String(bm.id) === lastOpened ? 'last-opened' : ''} ${kbCursor && kbCursor.id === String(bm.id) ? 'kb-cursor' : ''}`;
+        card.className = `bookmark-card glass rounded-xl ${bm.favorite ? 'favorite' : ''} ${bm.check ? 'has-warn' : ''} ${isSelected ? 'selected' : ''} ${String(bm.id) === lastOpened ? 'last-opened' : ''} ${kbCursor && kbCursor.id === String(bm.id) ? 'kb-cursor' : ''}`;
         card.dataset.id = bm.id;
         if (canDrag) card.draggable = true;
 
@@ -5115,7 +5185,7 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
         $('#optFavTop').classList.toggle('on', favTop);
         $('#optTagBar').classList.toggle('on', tagBarOn);
         document.body.classList.toggle('view-list', viewMode === 'list');
-        document.body.classList.toggle('view-compact', viewMode === 'compact');
+        document.body.classList.toggle('view-tiles', viewMode === 'tiles');
     }
 
     function render() {
@@ -7013,10 +7083,10 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
         else if (e.key === 'h') { e.preventDefault(); kbHelp(); }
         else if (e.key === 'n') { e.preventDefault(); openAddModal(); }
         else if (e.key === 'v') {
-            viewMode = { cards: 'list', list: 'compact', compact: 'cards' }[viewMode];
+            viewMode = { cards: 'list', list: 'tiles', tiles: 'cards' }[viewMode];
             store.set('lv_view', viewMode);
             render();
-            showToast('Ansicht: ' + { cards: 'Karten', list: 'Liste', compact: 'Kompakt' }[viewMode]);
+            showToast('Ansicht: ' + { cards: 'Karten', list: 'Liste', tiles: 'Kacheln' }[viewMode]);
         }
         else cardKeys(e);
     });
@@ -7318,6 +7388,26 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
         }
     }
 
+    // Administrator: Ist der Ordner data/ von außen abrufbar? Dann fehlt die Sperre im Webserver (Nginx, oder Apache ohne AllowOverride).
+    // Geprüft wird eine harmlose Datei ohne Geheimnisse, höchstens einmal pro Browser-Sitzung, solange alles in Ordnung ist.
+    if (LV_ADMIN) (async () => {
+        try { if (sessionStorage.getItem('lv_data_ok') === '1') return; } catch (_) {}
+        let open = false;
+        try {
+            const r = await fetch('data/nginx-deny.conf', { cache: 'no-store', credentials: 'omit', redirect: 'manual' });
+            open = r.ok && (await r.text()).includes('LinkVault');
+        } catch (_) { return; }
+        if (!open) { try { sessionStorage.setItem('lv_data_ok', '1'); } catch (_) {} return; }
+        showDialog({
+            title: 'Der Ordner data/ ist nicht geschützt',
+            html: '<p>Dein Webserver liefert Dateien aus dem Ordner data/ an jeden aus, der die Adresse kennt. Deine Links sind zwar verschlüsselt, aber dort liegt auch die Datei mit deinem Passwort-Schutz. Das solltest du gleich abstellen.</p>'
+                + '<p class="mt-2"><b>Nginx:</b> Den Block aus der Datei data/nginx-deny.conf in die Server-Konfiguration übernehmen und Nginx neu laden.</p>'
+                + '<p class="mt-2"><b>Apache:</b> Für diesen Ordner „AllowOverride All“ einschalten, dann greifen die mitgelieferten .htaccess-Dateien.</p>'
+                + '<p class="mt-2 text-xs text-slate-400">Die Meldung kommt bei jedem Öffnen, bis der Ordner gesperrt ist. Mehr dazu steht in der README.</p>',
+            buttons: [{ label: 'Verstanden', primary: true }]
+        });
+    })();
+
     // Direkt nach der Anmeldung: Gab es fremde Anmeldeversuche?
     if (LV_NOTICE && typeof LV_NOTICE === 'object') {
         const n = LV_NOTICE;
@@ -7377,7 +7467,7 @@ function lvBrowserEnglish(): bool {
 function lvUiOptions(): array {
     return [
     'mode' => ['auto', 'light', 'dark'], 'light' => ['1', '2', '3'], 'dark' => ['1', '2', '3'], 'lang' => ['', 'de', 'en'],
-    'view' => ['cards', 'list', 'compact'],
+    'view' => ['cards', 'list', 'tiles'],
     'sort' => ['title', 'title-desc', 'newest', 'oldest', 'clicks', 'opened', 'domain', 'folder'],
     'group' => ['domain', 'folder', 'none'], 'favtop' => ['1', '0'], 'tagbar' => ['1', '0'],
     ];
@@ -7388,6 +7478,7 @@ function lvUiClean($in): array {
     $out = [];
     foreach (lvUiOptions() as $k => $allowed) {
         $v = (is_array($in) && isset($in[$k]) && is_scalar($in[$k])) ? (string)$in[$k] : '';
+        if ($k === 'view' && $v === 'compact') $v = 'tiles'; // bis 3.4 hieß die dritte Ansicht „Kompakt“
         $out[$k] = in_array($v, $allowed, true) ? $v : $allowed[0];
     }
     return $out;
@@ -7991,7 +8082,7 @@ function lvUiFoot(): void {
         // Kopfzeile und Menüs
         "Suchen… (#tag, URL einfügen = hinzufügen)": "Search… (#tag, paste a URL to add it)", "Links durchsuchen": "Search links",
         "Suche leeren": "Clear search", "Mehrfachauswahl": "Select multiple", "Ansicht und Sortierung": "View and sorting",
-        "Darstellung": "Layout", "Karten": "Cards", "Liste": "List", "Kompakt": "Compact",
+        "Darstellung": "Layout", "Karten": "Cards", "Liste": "List", "Kacheln": "Tiles",
         "Sortierung": "Sort by", "Neueste zuerst": "Newest first", "Älteste zuerst": "Oldest first", "Oft benutzt": "Most used",
         "Zuletzt geöffnet": "Recently opened", "Nach Domain": "By domain", "Nach Ordner": "By folder", "Favoriten immer oben": "Favorites always on top",
         "Gruppieren": "Group", "Domains mit vielen Links": "Domains with many links", "Nach Ordnern": "By folder", "Gar nicht": "No grouping",
@@ -8224,6 +8315,15 @@ function lvUiFoot(): void {
         "Alle protokollierten Anmeldeversuche werden gelöscht.": "All logged sign-in attempts will be deleted.", "Leeren": "Clear",
         "Keine Fehlversuche seit deinem letzten Login": "No failed attempts since your last sign-in",
         "Neue Zugangsanfrage": "New access request",
+        "Der Ordner data/ ist nicht geschützt": "The data/ folder is not protected", "Verstanden": "Got it",
+        "Dein Webserver liefert Dateien aus dem Ordner data/ an jeden aus, der die Adresse kennt. Deine Links sind zwar verschlüsselt, aber dort liegt auch die Datei mit deinem Passwort-Schutz. Das solltest du gleich abstellen.":
+            "Your web server hands out files from the data/ folder to anyone who knows the address. Your links are encrypted, but the file with your password protection is stored there too. You should fix this right away.",
+        "Den Block aus der Datei data/nginx-deny.conf in die Server-Konfiguration übernehmen und Nginx neu laden.":
+            "Copy the block from the file data/nginx-deny.conf into the server configuration and reload Nginx.",
+        "Für diesen Ordner „AllowOverride All“ einschalten, dann greifen die mitgelieferten .htaccess-Dateien.":
+            "Switch on “AllowOverride All” for this folder, then the bundled .htaccess files take effect.",
+        "Die Meldung kommt bei jedem Öffnen, bis der Ordner gesperrt ist. Mehr dazu steht in der README.":
+            "This message appears every time you open LinkVault until the folder is locked. The README has the details.",
 
         // Benutzer verwalten
         "Wartet auf deine Freigabe": "Waiting for your approval", "Benutzer": "Users", "Neue Zugangsanfragen": "New access requests",
