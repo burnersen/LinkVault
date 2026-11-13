@@ -2151,7 +2151,9 @@ if ($action) {
                 if ($counter === 0) throw new Exception('Der Code stimmt nicht. Uhrzeit am Handy prüfen und neuen Code eingeben.');
                 $cfg['totp'] = lvEncryptWith($dek, $secret);
                 $cfg['totp_last'] = $counter;
+                $cfg['epoch'] = (int)$cfg['epoch'] + 1; // alle anderen Geräte werden abgemeldet
                 if (!lvSaveAuthConfigFull($cfg)) throw new Exception('Speichern fehlgeschlagen (Schreibrechte?).');
+                $_SESSION['lv_epoch'] = $cfg['epoch']; // dieses Gerät bleibt angemeldet
                 unset($_SESSION['lv_totp_pending']);
                 jsonOut(['success' => true, 'message' => 'Zwei-Faktor-Anmeldung ist jetzt aktiv.']);
 
@@ -2160,7 +2162,9 @@ if ($action) {
                 if ($cfg === null) throw new Exception('Kein Konto eingerichtet.');
                 lvRequirePassword($cfg, (string)($_POST['current_password'] ?? ''));
                 unset($cfg['totp'], $cfg['totp_last']);
+                $cfg['epoch'] = (int)$cfg['epoch'] + 1; // alle anderen Geräte werden abgemeldet
                 if (!lvSaveAuthConfigFull($cfg)) throw new Exception('Speichern fehlgeschlagen (Schreibrechte?).');
+                $_SESSION['lv_epoch'] = $cfg['epoch']; // dieses Gerät bleibt angemeldet
                 jsonOut(['success' => true, 'message' => 'Zwei-Faktor-Anmeldung ist abgeschaltet.']);
 
             case 'recovery_create':
