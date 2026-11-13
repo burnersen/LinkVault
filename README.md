@@ -13,7 +13,7 @@ Eine Lesezeichen-Verwaltung zum Selbsthosten in **einer einzigen PHP-Datei**. Ke
 ## Funktionen
 
 - Lesezeichen mit verschachtelten Ordnern, Schlagwörtern, Favoriten, Notizen und Volltextsuche
-- Import aus Lesezeichen-Dateien der Browser (HTML), Export als HTML oder JSON
+- Import aus Lesezeichen-Dateien der Browser (HTML, auch sehr große, samt Notizen aus Firefox), Export als HTML oder JSON
 - Papierkorb mit 30 Tagen Aufbewahrung, Duplikat-Suche, Prüfung auf tote Links
 - Automatisch sortieren (Werkzeuge → Automatisch sortieren): schlägt Tags und Ordner vor, ganz ohne KI und ohne fremde Dienste. Grundlage sind Gruppen mit Domains und Stichwörtern (YouTube → Video, Chefkoch → Kochen, „*xxx*“ → NSFW, …) und deine bisherige Sortierung. Die Gruppen sind eine einzige Liste, die du komplett ändern, ergänzen und löschen kannst, „Standard wiederherstellen“ holt die Originalfassung zurück. Erst kommt eine Vorschau zum Abhaken, vorher wird ein Backup angelegt, danach gibt es „Rückgängig“.
 - Tag-Leiste unter den Ordnern: Antippen filtert nach dem Tag, mehrere lassen sich kombinieren (abschaltbar unter Ansicht)

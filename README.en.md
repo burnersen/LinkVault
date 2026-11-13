@@ -15,7 +15,7 @@ Upload `index.php`, open it in the browser, create the first account. That's the
 ## Features
 
 - Bookmarks with nested folders, tags, favourites, notes, full-text search
-- Import from browser bookmark files (HTML), export as HTML or JSON
+- Import from browser bookmark files (HTML, including very large ones and Firefox notes), export as HTML or JSON
 - Trash with 30 days retention, duplicate finder, dead-link checker
 - Auto-sort (Tools → Auto-sort): suggests tags and folders without any AI and without outside services. It goes by groups of domains and keywords (YouTube → video, GitHub → dev, “*xxx*” → NSFW, …) and the way you have sorted so far. The groups are one single list you can change, extend and delete completely, “Restore defaults” brings back the original. You get a preview to tick off first, a backup is made before anything changes, and there is an undo button afterwards.
 - Tag bar below the folders: tap a tag to filter by it, several can be combined (can be switched off under View)

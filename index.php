@@ -1747,35 +1747,26 @@ function lvExtractMeta(string $html, string $ctype): array {
 
 /* ---------- Import ---------- */
 
-// Ordnerpfad zu einem Link aus einer Browser-Lesezeichen-Datei, z. B. „Technik > Go“
-function lvFolderFor(DOMNode $a): string {
-    $h3Of = function (DOMNode $n): ?string {
-        if (strtolower($n->nodeName) === 'h3') return trim($n->textContent);
-        if ($n instanceof DOMElement) {
-            // Der Parser verschachtelt die Einträge, die Überschrift kann tiefer liegen: die letzte zählt
-            $hs = $n->getElementsByTagName('h3');
-            if ($hs->length) return trim($hs->item($hs->length - 1)->textContent);
-        }
-        return null;
-    };
-    $names = [];
-    for ($n = $a->parentNode; $n; $n = $n->parentNode) {
-        if (strtolower($n->nodeName) !== 'dl') continue;
-        $found = null;
-        // Ordner-Überschrift steht direkt vor der Liste …
-        for ($p = $n->previousSibling; $p; $p = $p->previousSibling) {
-            $name = strtolower($p->nodeName);
-            if ($name === 'h3' || $name === 'dt') { $found = (string)$h3Of($p); break; }
-            if ($name === 'dl') break;
-        }
-        // … oder die Liste liegt im Eintrag der Überschrift
-        if ($found === null) {
-            $par = $n->parentNode;
-            if ($par && strtolower($par->nodeName) === 'dt') $found = (string)$h3Of($par);
-        }
-        if ($found !== null && $found !== '') $names[] = $found;
+/** Lesezeichen-Datei in UTF-8 umwandeln, falls sie in einem anderen Zeichensatz kommt (ältere Browser, Windows) */
+function lvImportToUtf8(string $s): string {
+    if (preg_match('//u', $s)) return $s; // schon gültiges UTF-8
+    $cs = '';
+    if (preg_match('~<meta[^>]+charset\s*=\s*["\']?\s*([a-z0-9_\-]+)~i', substr($s, 0, 4000), $m)) $cs = strtoupper($m[1]);
+    if (function_exists('mb_convert_encoding')) {
+        $known = array_map('strtoupper', mb_list_encodings());
+        $from = ($cs !== '' && $cs !== 'UTF-8' && in_array($cs, $known, true)) ? $cs : 'Windows-1252';
+        $out = @mb_convert_encoding($s, 'UTF-8', $from);
+        if (is_string($out) && $out !== '') return $out;
     }
-    $names = array_reverse($names);
+    if (function_exists('iconv')) {
+        $out = @iconv($cs !== '' && $cs !== 'UTF-8' ? $cs : 'Windows-1252', 'UTF-8//IGNORE', $s);
+        if (is_string($out) && $out !== '') return $out;
+    }
+    return $s; // ungültige Zeichen ersetzt später json_encode
+}
+
+/** Ordnerpfad aus den Namen der offenen Ordner, z. B. „Technik > Go“ (die Sammelordner der Browser fallen weg) */
+function lvImportFolderPath(array $names): string {
     // Die Sammelordner der Browser selbst weglassen, wenn darunter echte Ordner liegen
     $roots = ['lesezeichen-symbolleiste', 'lesezeichenleiste', 'lesezeichen-menü', 'lesezeichenmenü', 'weitere lesezeichen',
               'bookmarks bar', 'bookmarks toolbar', 'bookmarks menu', 'other bookmarks', 'mobile lesezeichen', 'mobile bookmarks',
@@ -1783,6 +1774,71 @@ function lvFolderFor(DOMNode $a): string {
     $lower = fn($s) => function_exists('mb_strtolower') ? mb_strtolower($s, 'UTF-8') : strtolower($s);
     if (count($names) > 1 && in_array($lower($names[0]), $roots, true)) array_shift($names);
     return implode(' > ', array_slice($names, -4));
+}
+
+/**
+ * Liest eine Lesezeichen-Datei der Browser (Netscape-Format: <DT><H3>Ordner</H3><DL> … <DT><A HREF>Titel</A><DD>Notiz … </DL>).
+ * Bewusst ohne DOM: Die Dateien schließen ihre <DT> nie. Ein HTML-Parser schachtelt deshalb jeden Eintrag in den vorigen
+ * und hört bei ein paar hundert Links in einem Ordner still auf (Tiefengrenze von libxml). Hier wird die Datei einfach
+ * der Reihe nach gelesen und die offenen Ordner werden mitgezählt. Das klappt bei jeder Größe und jeder Tiefe.
+ * Ergebnis: Liste von ['href', 'title', 'folders' => [...], 'add_date', 'tags', 'desc']
+ */
+function lvReadBookmarkHtml(string $html): array {
+    $html = lvImportToUtf8($html);
+    $len = strlen($html);
+    $text = function (string $s): string {
+        $s = preg_replace('~<[^>]*>~', ' ', $s) ?? $s;
+        $s = html_entity_decode($s, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        return trim(preg_replace('/\s+/u', ' ', $s) ?? $s);
+    };
+    $attr = function (string $attrs, string $name): string {
+        if (!preg_match('~(?:^|\s)' . $name . '\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s>]+))~i', $attrs, $m)) return '';
+        return trim(html_entity_decode($m[count($m) - 1], ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+    };
+    // Wo hört ein Text auf, wenn das schließende Tag fehlt? Spätestens beim nächsten Eintrag oder Ordner.
+    $nextBlock = function (int $from) use ($html, $len): int {
+        return preg_match('~<(?:/?dl|dt|h3)\b~i', $html, $n, PREG_OFFSET_CAPTURE, $from) ? (int)$n[0][1] : $len;
+    };
+    $out = [];
+    $stack = [];     // Namen der offenen Listen, null = Liste ohne Überschrift (die äußerste)
+    $pending = null; // zuletzt gelesene Ordner-Überschrift, sie gehört zur nächsten Liste
+    $last = null;    // zuletzt gelesener Link, für seine Notiz (<DD>)
+    $pos = 0;
+    while ($pos < $len && preg_match('~<(/?)(dl|dt|dd|h3|a)\b([^>]*)>~i', $html, $m, PREG_OFFSET_CAPTURE, $pos)) {
+        $pos = (int)$m[0][1] + strlen($m[0][0]);
+        $close = $m[1][0] === '/';
+        $tag = strtolower($m[2][0]);
+        if ($tag === 'dl') {
+            if ($close) { if ($stack) array_pop($stack); }
+            else { $stack[] = $pending; $pending = null; }
+            $last = null;
+            continue;
+        }
+        if ($close) continue;
+        if ($tag === 'dt') { $last = null; continue; }
+        if ($tag === 'dd') {
+            if ($last === null) continue; // Notiz zu einem Ordner: gibt es bei uns nicht
+            $end = $nextBlock($pos);
+            $out[$last]['desc'] = $text(substr($html, $pos, $end - $pos));
+            $last = null;
+            $pos = $end;
+            continue;
+        }
+        // h3 oder a: Text bis zum schließenden Tag
+        $end = stripos($html, '</' . $tag, $pos);
+        $block = $nextBlock($pos);
+        if ($end === false || $end > $block) $end = $block;
+        $inner = $text(substr($html, $pos, $end - $pos));
+        $pos = $end;
+        if ($tag === 'h3') { $pending = $inner; $last = null; continue; }
+        $pending = null; // Überschrift ohne eigene Liste (leerer Ordner)
+        $folders = [];
+        foreach ($stack as $f) if ($f !== null && $f !== '') $folders[] = $f;
+        $out[] = ['href' => $attr($m[3][0], 'href'), 'title' => $inner, 'folders' => $folders,
+                  'add_date' => (int)$attr($m[3][0], 'add_date'), 'tags' => $attr($m[3][0], 'tags'), 'desc' => ''];
+        $last = count($out) - 1;
+    }
+    return $out;
 }
 
 /** Liest eine Import-Datei (Browser-HTML oder JSON) und liefert [neue Einträge, übersprungen] */
@@ -1812,24 +1868,18 @@ function lvParseImport(string $html, array $bookmarks): array {
             $haveIds[$item['id']] = true;
         }
     } else {
-        if (!class_exists('DOMDocument')) throw new Exception('PHP-Erweiterung DOM fehlt auf dem Server.');
-        $dom = new DOMDocument();
-        // Ohne Zeichensatz-Angabe in der Datei würden Umlaute sonst kaputtgehen
-        $hasCharset = (bool)preg_match('~<meta[^>]+charset~i', substr($html, 0, 2000));
-        @$dom->loadHTML(($hasCharset ? '' : '<?xml encoding="UTF-8">') . $html, LIBXML_NOERROR | LIBXML_NOWARNING);
-        foreach ($dom->getElementsByTagName('a') as $a) {
-            $href = trim($a->getAttribute('href'));
-            $title = cleanText($a->textContent, 300);
-            if (!$href || !$title || !preg_match('~^https?://~i', $href) || preg_match('/[\s<>"\x00-\x1F]/', $href)) continue;
+        foreach (lvReadBookmarkHtml($html) as $e) {
+            $href = $e['href'];
+            $title = cleanText($e['title'], 300);
+            if ($href === '' || $title === '' || !preg_match('~^https?://~i', $href) || preg_match('/[\s<>"\x00-\x1F]/', $href)) continue;
             if (isset($existingUrls[$href])) { $skipped++; continue; }
-            $folder = lvFolderFor($a);
-            $added = (int)$a->getAttribute('add_date');
+            $folder = lvImportFolderPath($e['folders']);
             $item = [
                 'id' => generateId(), 'title' => $title, 'url' => $href,
-                'category' => $folder !== '' ? cleanCategory($folder) : 'Importiert', 'description' => '',
-                'favorite' => false, 'created' => $added > 0 ? $added : time(),
+                'category' => $folder !== '' ? cleanCategory($folder) : 'Importiert', 'description' => cleanText($e['desc'], 2000),
+                'favorite' => false, 'created' => $e['add_date'] > 0 ? $e['add_date'] : time(),
             ];
-            $tags = cleanTags((string)$a->getAttribute('tags'));
+            $tags = cleanTags($e['tags']);
             if ($tags) $item['tags'] = $tags;
             $new[] = $item;
             $existingUrls[$href] = true;
