@@ -3118,8 +3118,8 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
             transform-origin: left; animation: kbHelpBar 10s linear forwards;
         }
         @keyframes kbHelpBar { from { transform: scaleX(1); } to { transform: scaleX(0); } }
-        /* Tastatur-Rahmen in der Mehrfachauswahl (Pfeiltasten) */
-        body.select-mode .bookmark-card.kb-cursor { outline: 2px dashed #c4b5fd; outline-offset: 2px; }
+        /* Tastatur-Rahmen (Pfeiltasten) */
+        .bookmark-card.kb-cursor { outline: 2px dashed #c4b5fd; outline-offset: 2px; }
 
         .favicon {
             width: 28px; height: 28px; border-radius: 7px; object-fit: contain;
@@ -4197,7 +4197,7 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
     let selectMode = false;
     let selected = new Set();
     let lastSelected = null;
-    let kbCursor = null;   // Tastatur-Rahmen in der Mehrfachauswahl: { el, id }
+    let kbCursor = null;   // Tastatur-Rahmen der Pfeiltasten: { el, id }
     let dragIds = null;
     let lastSync = Date.now();
     // Welche Gruppen ausgeklappt sind (bleibt nach render erhalten)
@@ -4593,7 +4593,7 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
         const card = document.createElement('article');
         const isSelected = selected.has(bm.id);
         const domain = getDomain(bm.url);
-        card.className = `bookmark-card glass rounded-xl ${bm.favorite ? 'favorite' : ''} ${isSelected ? 'selected' : ''} ${String(bm.id) === lastOpened ? 'last-opened' : ''}`;
+        card.className = `bookmark-card glass rounded-xl ${bm.favorite ? 'favorite' : ''} ${isSelected ? 'selected' : ''} ${String(bm.id) === lastOpened ? 'last-opened' : ''} ${kbCursor && kbCursor.id === String(bm.id) ? 'kb-cursor' : ''}`;
         card.dataset.id = bm.id;
         if (canDrag) card.draggable = true;
 
@@ -5921,7 +5921,9 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
                     ${row(['V'], 'Ansicht wechseln')}
                     ${row(['H'], 'Diese Hilfe')}
                     ${row(['Esc'], 'Schließen, Suche leeren')}
-                    <div class="kb-help-head">Maus über einem Eintrag</div>
+                    <div class="kb-help-head">Eintrag unter Maus oder Rahmen</div>
+                    ${row(['↑', '↓', '←', '→'], 'Eintrag wechseln')}
+                    ${row(['Leertaste'], 'Seite öffnen')}
                     ${row(['F'], 'Favorit')}
                     ${row(['C'], 'URL kopieren')}
                     ${row(['E'], 'Bearbeiten')}
@@ -5976,19 +5978,41 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
     }
     function cardKeys(e) {
         const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+        const arrow = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(key);
         if (!selectMode) {
-            if (!['Delete', 'f', 'c', 'e'].includes(key) || e.repeat) return;
-            const card = mainEl.querySelector('.bookmark-card:hover');
+            if (!arrow && ![' ', 'Delete', 'f', 'c', 'e'].includes(key)) return;
+            const cards = Array.from(mainEl.querySelectorAll('.bookmark-card')).filter(c => c.offsetParent !== null);
+            const cur = kbCursor && (cards.includes(kbCursor.el) ? kbCursor.el : cards.find(c => c.dataset.id === kbCursor.id));
+            if (arrow) {
+                if (!cards.length) return;
+                e.preventDefault();
+                if (cur) { kbSetCursor(kbMove(cards, cur, key)); return; }
+                // Start: der Eintrag unter der Maus, sonst der erste
+                const start = mainEl.querySelector('.bookmark-card:hover');
+                kbSetCursor(start && cards.includes(start) ? start : cards[0]);
+                return;
+            }
+            // Der Rahmen der Pfeiltasten geht vor, sonst zählt der Eintrag unter der Maus.
+            // Die Leertaste öffnet nur den Eintrag im Rahmen, sonst blättert sie wie gewohnt.
+            const card = cur || (key !== ' ' && mainEl.querySelector('.bookmark-card:hover'));
             const bm = card && byId(card.dataset.id);
             if (!bm) return;
             e.preventDefault();
-            if (key === 'Delete') deleteIds([bm.id]);
+            if (e.repeat) return;
+            if (key === ' ') {
+                if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+                openLink(bm);
+            }
+            else if (key === 'Delete') {
+                // Rahmen vorher auf den Nachbarn setzen, damit man nach dem Löschen dort weitermacht
+                if (cur) { const i = cards.indexOf(cur); kbSetCursor(cards[i + 1] || cards[i - 1] || null); }
+                deleteIds([bm.id]);
+            }
             else if (key === 'f') toggleFavorite(bm.id);
             else if (key === 'c') copyText(bm.url, 'URL kopiert');
             else openEditModal(bm);
             return;
         }
-        const arrow = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(key);
         if (!arrow && key !== ' ' && key !== 'a' && key !== 'Delete') return;
         e.preventDefault();
         // Ein noch fokussierter Knopf würde die Leertaste sonst als Klick werten
@@ -6014,6 +6038,14 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
         }
         kbSetCursor(next);
     }
+    // Ausserhalb der Mehrfachauswahl übernimmt die Maus wieder, sobald sie wirklich bewegt wird
+    let kbMouse = '';
+    document.addEventListener('mousemove', e => {
+        const pos = e.screenX + ',' + e.screenY;
+        if (pos === kbMouse) return;
+        kbMouse = pos;
+        if (!selectMode && kbCursor) kbSetCursor(null);
+    });
     // Klick in der Mehrfachauswahl setzt den Tastatur-Rahmen auf den angeklickten Eintrag
     mainEl.addEventListener('click', e => {
         const card = selectMode && e.target.closest('.bookmark-card');
@@ -6435,7 +6467,7 @@ html.lvt .bookmark-card.selected {
     border-color: rgb(var(--lv-ar) / 0.8) !important; box-shadow: 0 0 0 2px rgb(var(--lv-ar) / 0.3);
     background: linear-gradient(155deg, var(--lv-card), rgb(var(--lv-ar) / 0.14));
 }
-html.lvt body.select-mode .bookmark-card.kb-cursor { outline-color: var(--lv-a); }
+html.lvt .bookmark-card.kb-cursor { outline-color: var(--lv-a); }
 html.lvt .bookmark-card.last-opened { outline-color: var(--lv-a); box-shadow: 0 0 14px -2px rgb(var(--lv-ar) / 0.6); }
 html[data-lvt^="l"] .bookmark-card { box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06); }
 html.lvt .favicon { background: var(--lv-group); }
@@ -6899,7 +6931,7 @@ function lvUiFoot(): void {
         "Favoriten gesetzt": "Favorites updated", "Umbenannt": "Renamed", "Ordner aufgelöst": "Folder dissolved", "Erledigt": "Done",
         "Tastenkürzel": "Keyboard shortcuts", "Überall": "Everywhere", "Suchen": "Search", "Neuen Link anlegen": "Add a new link",
         "Ansicht wechseln": "Switch view", "Diese Hilfe": "This help", "Schließen, Suche leeren": "Close, clear search",
-        "Maus über einem Eintrag": "Mouse over an entry", "Eintrag wechseln": "Move between entries", "Markieren an/aus": "Select on/off",
+        "Eintrag unter Maus oder Rahmen": "Entry under mouse or frame", "Seite öffnen": "Open page", "Eintrag wechseln": "Move between entries", "Markieren an/aus": "Select on/off",
         "Beim Wandern markieren": "Select while moving", "Alle angezeigten markieren": "Select all shown", "Markierte löschen": "Delete selected",
         "Entf": "Del", "Leertaste": "Space",
         "Das ist kein Web-Link": "This is not a web link", "Kopieren fehlgeschlagen": "Copying failed", "URL kopiert": "URL copied",
