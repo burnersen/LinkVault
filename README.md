@@ -22,6 +22,26 @@ Eine Lesezeichen-Verwaltung zum Selbsthosten in **einer einzigen PHP-Datei**. Ke
 - Als App installierbar (PWA), läuft ohne CDN (Schrift und CSS sind eingebettet)
 - Heller und dunkler Modus mit je drei Farbvarianten (Violett, Blau, Grün), auf Wunsch automatisch nach Geräte-Einstellung
 - Oberfläche auf Deutsch und Englisch, umschaltbar unter Werkzeuge → Design & Sprache (jeder Benutzer hat seine eigenen Einstellungen, sie werden an seinem Konto gespeichert und gelten auf jedem Gerät)
+- Am Desktop komplett mit der Tastatur bedienbar, `H` zeigt alle Tastenkürzel
+
+### Tastenkürzel
+
+Mit `H` blendet LinkVault eine Übersicht ein, sie verschwindet nach 10 Sekunden von selbst.
+
+![Übersicht der Tastenkürzel](docs/shortcuts.png)
+
+| Taste | Aktion |
+|---|---|
+| `S` | Suchen (auch `/` und `Strg+K`) |
+| `N` | Neuen Link anlegen |
+| `V` | Ansicht wechseln |
+| `H` | Hilfe ein- und ausblenden |
+| `Esc` | Schließen, Suche leeren |
+| `↑` `↓` `←` `→` | Eintrag wechseln |
+| `Leertaste` | Seite des gewählten Eintrags öffnen |
+| `F` / `C` / `E` / `Entf` | Favorit, URL kopieren, Bearbeiten, Löschen (Eintrag unter der Maus oder im Rahmen) |
+
+In der Mehrfachauswahl markiert die `Leertaste` den Eintrag, `Umschalt` + Pfeiltaste markiert beim Wandern, `A` markiert alle angezeigten Einträge und `Entf` löscht die markierten.
 
 ## Voraussetzungen
 

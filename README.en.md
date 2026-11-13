@@ -24,6 +24,26 @@ Upload `index.php`, open it in the browser, create the first account. That's the
 - Installable as a PWA, works without any CDN (font and CSS are embedded)
 - Light and dark mode with three colour variants each (violet, blue, green), optionally following the device setting
 - Interface in German and English, switchable under Tools → Appearance & language (every user has their own settings, stored with their account and applied on every device)
+- Fully usable with the keyboard on the desktop, `H` shows all shortcuts
+
+### Keyboard shortcuts
+
+Press `H` to show an overview. It disappears on its own after 10 seconds.
+
+![Overview of the keyboard shortcuts](docs/shortcuts.en.png)
+
+| Key | Action |
+|---|---|
+| `S` | Search (also `/` and `Ctrl+K`) |
+| `N` | Add a new link |
+| `V` | Switch view |
+| `H` | Show or hide the help |
+| `Esc` | Close, clear search |
+| `↑` `↓` `←` `→` | Move between entries |
+| `Space` | Open the page of the chosen entry |
+| `F` / `C` / `E` / `Del` | Favourite, copy URL, edit, delete (entry under the mouse or in the frame) |
+
+In multi-select mode `Space` selects the entry, `Shift` + arrow key selects while moving, `A` selects all entries shown and `Del` deletes the selected ones.
 
 ## Requirements
 
