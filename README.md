@@ -65,11 +65,13 @@ In der Mehrfachauswahl markiert die `Leertaste` den Eintrag, `Umschalt` + Pfeilt
 LinkVault legt `.htaccess`-Dateien an, die jeden Zugriff auf `data/` sperren. Das wirkt unter Apache, wenn `AllowOverride` eingeschaltet ist. Nginx beachtet `.htaccess` nicht, dort gehört dieser Block in die `server { }`-Sektion (derselbe Text liegt auch in `data/nginx-deny.conf`):
 
 ```nginx
-location ^~ /data/ {
+location ^~ /linkvault/data/ {
     deny all;
     return 404;
 }
 ```
+
+Der Pfad muss zu dem Ordner passen, in dem LinkVault liegt. Im Beispiel ist das `/linkvault/`. Liegt es direkt im Hauptverzeichnis der Domain, heißt die Zeile `location ^~ /data/ {`. Stimmt der Pfad nicht, greift die Regel nicht und `data/` ist offen. LinkVault schreibt den passenden Pfad selbst in `data/nginx-deny.conf`.
 
 Bitte testen. Hier darf **keine** 200 herauskommen:
 

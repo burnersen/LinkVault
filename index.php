@@ -35,7 +35,7 @@ define('BACKUP_KEEP_PRE', 10);   // Stände vor großen Aktionen
 define('LV_TRASH_DAYS', 30);     // so lange bleiben gelöschte Links im Papierkorb
 // false = Tailwind ist fest eingebaut. true = per CDN laden (nur zum Basteln, lockert die Sicherheitsregeln).
 define('LV_TAILWIND_CDN', false);
-define('LV_UA', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36');
+define('LV_UA', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36');
 
 define('LV_AUTH_ENABLED', true);
 define('LV_SESSION_NAME', 'LVSESSID');
@@ -93,11 +93,20 @@ function lvEnsureDataDir(): void {
     }
 
     // Nginx: fertige Location-Regel (muss in die Server-Config übernommen werden)
+    // Der Pfad muss zum Ordner passen, in dem LinkVault liegt (z. B. /linkvault/data/), sonst greift die Regel nicht.
     $ngx = LV_DATA_DIR . '/nginx-deny.conf';
-    if (!is_file($ngx)) {
+    $base = '';
+    if (PHP_SAPI !== 'cli' && !empty($_SERVER['SCRIPT_NAME'])) {
+        $base = rtrim(str_replace('\\', '/', dirname((string)$_SERVER['SCRIPT_NAME'])), '/');
+        if (!preg_match('~^(/[A-Za-z0-9._\-]+)*$~', $base)) $base = '';
+    }
+    $old = is_file($ngx) ? (string)@file_get_contents($ngx) : '';
+    // Ältere Versionen schrieben immer "/data/", das passt nur im Hauptverzeichnis der Domain
+    if ($old === '' || ($base !== '' && strpos($old, "location ^~ /data/ {") !== false)) {
         @file_put_contents($ngx,
-            "# LinkVault – diesen Block in die nginx server { }-Sektion übernehmen:\n" .
-            "location ^~ /data/ {\n" .
+            "# LinkVault – diesen Block in die nginx server { }-Sektion übernehmen.\n" .
+            "# Der Pfad muss zum Ordner passen, in dem LinkVault liegt.\n" .
+            "location ^~ {$base}/data/ {\n" .
             "    deny all;\n" .
             "    return 404;\n" .
             "}\n"
@@ -538,7 +547,9 @@ function lvLogout(): void {
 }
 
 function lvCheckNewPassword(string $password): void {
-    if (strlen($password) < 12) throw new Exception('Passwort: mindestens 12 Zeichen.');
+    $len = function_exists('mb_strlen') ? mb_strlen($password, 'UTF-8') : strlen($password);
+    if ($len < 12) throw new Exception('Passwort: mindestens 12 Zeichen.');
+    if (strlen($password) > 1024) throw new Exception('Passwort: höchstens 1024 Zeichen.');
     if (!preg_match('/[A-Za-z]/', $password) || !preg_match('/[0-9]/', $password)) {
         throw new Exception('Passwort muss Buchstaben und Zahlen enthalten.');
     }
@@ -563,10 +574,19 @@ function lvLogin(string $user, string $pass, string $code = ''): string {
     $changed = false;
     if (!empty($cfg['totp'])) {
         $secret = lvDecryptWith($dek, (string)$cfg['totp']);
-        $counter = $secret !== null ? lvTotpVerify($secret, $code, (int)($cfg['totp_last'] ?? 0)) : 0;
+        // Prüfen und Merken unter einer Sperre, sonst könnten zwei gleichzeitige Anfragen denselben Code nutzen
+        $uid = (string)($cfg['_uid'] ?? '');
+        $lk = @fopen(lvUserDir($uid) . '/bookmarks.lock', 'c');
+        if ($lk) flock($lk, LOCK_EX);
+        $now = lvLoadAuthConfig(true, $uid);
+        $last = max((int)($cfg['totp_last'] ?? 0), (int)($now['totp_last'] ?? 0));
+        $counter = $secret !== null ? lvTotpVerify($secret, $code, $last) : 0;
+        if ($counter > 0) {
+            $cfg['totp_last'] = $counter; // jeder Code gilt nur einmal
+            lvSaveAuthConfigFull($cfg);
+        }
+        if ($lk) { flock($lk, LOCK_UN); fclose($lk); }
         if ($counter === 0) return 'totp';
-        $cfg['totp_last'] = $counter; // jeder Code gilt nur einmal
-        $changed = true;
     }
     // Ältere Schlüssel-Verpackung beim Login unauffällig auf den aktuellen Stand heben
     if ($cfg['kdf_iters'] < LV_KDF_ITERS) {
@@ -875,7 +895,8 @@ function saveBookmarks(array $bookmarks): bool {
 
 function ensureBackupDir(?string $uid = null): bool {
     $dir = lvBackupDir($uid);
-    if (!is_dir($dir) && !@mkdir($dir, 0755, true)) return false;
+    if (!is_dir($dir) && !@mkdir($dir, 0700, true)) return false;
+    if ((@fileperms($dir) & 0077) !== 0) @chmod($dir, 0700); // ältere Installationen: 0755 nachziehen
     $ht = $dir . '/.htaccess';
     if (!is_file($ht)) {
         @file_put_contents($ht,
@@ -1471,12 +1492,20 @@ function lvSafeFetch(string $url, array $o = []): array {
             $loc = $state['loc'];
             curl_close($ch);
         } else {
+            // Ohne cURL: direkt die geprüfte IP ansprechen, damit PHP den Namen nicht ein zweites Mal auflöst
+            $host = trim($p['host'], '[]');
+            $scheme = strtolower($p['scheme']);
+            $ipUrl = $scheme . '://' . (strpos($r['ip'], ':') !== false ? '[' . $r['ip'] . ']' : $r['ip'])
+                . (isset($p['port']) ? ':' . (int)$p['port'] : '')
+                . ($p['path'] ?? '/') . (isset($p['query']) ? '?' . $p['query'] : '');
+            $hostHdr = (strpos($host, ':') !== false ? '[' . $host . ']' : $host) . (isset($p['port']) ? ':' . (int)$p['port'] : '');
             $ctx = stream_context_create([
                 'http' => ['method' => $head ? 'HEAD' : 'GET', 'timeout' => $timeout, 'ignore_errors' => true, 'follow_location' => 0,
-                           'header' => "User-Agent: " . LV_UA . "\r\nAccept: {$accept}\r\nAccept-Language: de,en;q=0.8\r\n"],
-                'ssl' => ['verify_peer' => true, 'verify_peer_name' => true],
+                           'header' => "Host: {$hostHdr}\r\nUser-Agent: " . LV_UA . "\r\nAccept: {$accept}\r\nAccept-Language: de,en;q=0.8\r\n"],
+                'ssl' => ['verify_peer' => true, 'verify_peer_name' => true, 'peer_name' => $host, 'SNI_enabled' => true],
             ]);
-            $body = @file_get_contents($url, false, $ctx, 0, $limit);
+            $http_response_header = [];
+            $body = @file_get_contents($ipUrl, false, $ctx, 0, $limit);
             $res['body'] = $body === false ? '' : $body;
             $res['code'] = 0;
             foreach (($http_response_header ?? []) as $h) {
@@ -1924,6 +1953,8 @@ if ($action === 'sw') {
 
 if ($action === 'favicon') {
     lvSecurityHeaders(false);
+    // Fremde SVG-Icons: beim direkten Aufruf in einen eigenen, leeren Ursprung sperren
+    header("Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox; frame-ancestors 'none'");
     if (!lvIsLoggedIn()) { http_response_code(401); exit; }
     $key = lvDataKey();
     session_write_close(); // viele Icons laden gleichzeitig, die Session darf das nicht ausbremsen
@@ -7069,6 +7100,7 @@ function lvUiFoot(): void {
         "Benutzer nicht gefunden.": "User not found.", "Das darf nur der Administrator.": "Only the administrator may do that.",
         "Schlüssel konnte nicht geschützt werden.": "The key could not be protected.", "Verschlüsselung fehlgeschlagen.": "Encryption failed.",
         "Passwort: mindestens 12 Zeichen.": "Password: at least 12 characters.",
+        "Passwort: höchstens 1024 Zeichen.": "Password: at most 1024 characters.",
         "Passwort muss Buchstaben und Zahlen enthalten.": "The password must contain letters and digits.",
         "Benutzername: 2–64 Zeichen.": "User name: 2–64 characters.", "Setup war schon erledigt. Bitte anmelden.": "Setup was already done. Please sign in.",
         "Passwort-Hash fehlgeschlagen.": "Password hashing failed.",
