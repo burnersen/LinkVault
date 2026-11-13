@@ -230,7 +230,7 @@ Nur für Leute, die LinkVault selbst weitergeben wollen, zum Benutzen braucht da
 php tools/build-release.php
 ```
 
-Das legt `dist/linkvault-install.php` und `dist/linkvault-<Version>.zip` an. Im Repository erledigt das ein Workflow, sobald ein Tag wie `v3.6.0` gepusht wird.
+Das legt `dist/linkvault-install.php` und `dist/linkvault-<Version>.zip` an. Im Repository erledigt das ein Workflow: unter *Actions → Release → Run workflow* per Knopf, oder von selbst, sobald ein Tag wie `LinkVault-3.6.0` gepusht wird.
 
 ## `data/` niemals veröffentlichen
 

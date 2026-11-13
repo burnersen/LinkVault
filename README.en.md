@@ -232,7 +232,7 @@ Only for people who want to distribute LinkVault themselves, nobody needs this t
 php tools/build-release.php
 ```
 
-This creates `dist/linkvault-install.php` and `dist/linkvault-<version>.zip`. In the repository a workflow does this whenever a tag like `v3.6.0` is pushed.
+This creates `dist/linkvault-install.php` and `dist/linkvault-<version>.zip`. In the repository a workflow does this: by button under *Actions → Release → Run workflow*, or automatically whenever a tag like `LinkVault-3.6.0` is pushed.
 
 ## Never publish `data/`
 
