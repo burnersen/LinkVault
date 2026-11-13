@@ -8,3 +8,6 @@
 /bookmarks.lock
 /backups/
 *.lvbak
+
+# Built release files (php tools/build-release.php)
+/dist/

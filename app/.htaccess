@@ -1,0 +1,8 @@
+# LinkVault: Programmteile, nie direkt aufrufbar. Alles läuft über die index.php eine Ebene höher.
+<IfModule mod_authz_core.c>
+Require all denied
+</IfModule>
+<IfModule !mod_authz_core.c>
+Deny from all
+</IfModule>
+Options -Indexes
