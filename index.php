@@ -28,7 +28,7 @@ error_reporting(E_ALL);
 ini_set('display_errors', 0);
 date_default_timezone_set('Europe/Berlin');
 
-define('LV_VERSION', '3.5.0');
+define('LV_VERSION', '3.6.0');
 define('LV_ROOT', __DIR__);          // hier liegt die index.php, daneben data/
 define('LV_APP', LV_ROOT . '/app');  // Programmteile
 define('LV_DATA_DIR', LV_ROOT . '/data');
