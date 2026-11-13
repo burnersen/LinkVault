@@ -1,0 +1,21 @@
+# Baut bei jedem Versions-Tag (z. B. v3.6.0) die Release-Dateien und hängt sie an ein GitHub-Release.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dateien bauen
+        run: php tools/build-release.php
+      - name: Release anlegen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/linkvault-install.php dist/linkvault-*.zip --title "LinkVault ${GITHUB_REF_NAME#v}" --generate-notes

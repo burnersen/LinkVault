@@ -1,8 +1,8 @@
 # LinkVault
 
-A self-hosted bookmark manager in **one single PHP file**. No database, no dependencies, no build step, no requests to third-party servers. Every user's bookmarks are stored encrypted with AES-256-GCM, and the key that opens them is protected by that user's password.
+A self-hosted bookmark manager in **plain PHP**, installed with one single file. No database, no dependencies, no build step, no requests to third-party servers. Every user's bookmarks are stored encrypted with AES-256-GCM, and the key that opens them is protected by that user's password.
 
-Upload `index.php`, open it in the browser, create the first account. That's the whole installation.
+Upload `linkvault-install.php`, open it in the browser, create the first account. That's the whole installation.
 
 > The interface is available in German and English (switchable in the app). The code comments are German.
 
@@ -58,13 +58,27 @@ In multi-select mode `Space` selects the entry, `Shift` + arrow key selects whil
 
 ## Installation
 
-1. Copy `index.php` into a directory on your web server.
-2. Make sure PHP may write to that directory (it creates `data/` next to the file).
-3. Open the page **immediately** and create the first account. This account is the administrator.
+1. Download `linkvault-install.php` from the [latest release](../../releases/latest) and copy it into a directory on your web server.
+2. Make sure PHP may write to that directory (it creates `index.php`, the folder `app/` and later `data/` there).
+3. Open `linkvault-install.php` in the browser **immediately** and click "Install now". The file unpacks the program, deletes itself and redirects. Create the first account there. This account is the administrator.
 4. Check that `data/` is not reachable from outside (see "Protect the data directory").
 5. In *Tools → Account & security*: create a recovery code and switch on two-factor login.
 
 > The first visitor who opens a freshly uploaded, not yet configured LinkVault becomes the administrator. Do step 3 right after uploading.
+
+**Prefer doing it by hand?** The release also contains `linkvault-<version>.zip`. Unpack it and upload the contents of the folder `linkvault/`, that is `index.php` **and** the folder `app/`. If you clone the repository, those two are all you need.
+
+### Layout
+
+```
+index.php      entry point and settings
+app/lib/       functions (storage, accounts, encryption, login, outbound requests, import, interface)
+app/routes/    font, icon, manifest, favicons and all JSON actions
+app/views/     login page and main page (HTML, CSS, JavaScript)
+data/          created at first start, everything secret lives here
+```
+
+The files in `app/` do nothing when requested directly, everything goes through `index.php`. On Apache an `.htaccess` locks the folder as well.
 
 ### Protect the data directory
 
@@ -179,7 +193,7 @@ Honest limits, so you can decide for yourself:
 - **The sites you bookmark see your server's IP address** when LinkVault fetches a title or icon or checks a link.
 - **The administrator can delete** accounts including their data, and whoever has file access to the server can do that too. Keep your own `.lvbak` backup.
 - **No password, no data.** There is no reset by e-mail and no back door. Create the recovery code and keep it somewhere safe.
-- This is a hobby project. It has not been audited by an independent security firm. The code is one readable file, so please do look for yourself.
+- This is a hobby project. It has not been audited by an independent security firm. The code is readable PHP without dependencies, so please do look for yourself.
 
 ## Backups
 
@@ -204,11 +218,25 @@ A few constants at the top of `index.php`:
 
 ## Updating
 
-Replace `index.php` with the new version. `data/` stays untouched. Older data formats are migrated automatically at the next login.
+Upload the new `linkvault-install.php` and open it. It detects the existing installation, replaces only `index.php` and `app/` and deletes itself again. `data/` stays untouched. Older data formats are migrated automatically at the next login.
+
+By hand it works the same way: replace `index.php` and the folder `app/` with the new version.
+
+**Coming from 3.5.0 or older:** Until then LinkVault was just `index.php`. Since then the folder `app/` belongs to it. If you only swap `index.php`, you get a message that `app/` is missing. Re-apply your own values for the constants at the top of `index.php` afterwards.
+
+### Building a release
+
+Only for people who want to distribute LinkVault themselves, nobody needs this to use it:
+
+```bash
+php tools/build-release.php
+```
+
+This creates `dist/linkvault-install.php` and `dist/linkvault-<version>.zip`. In the repository a workflow does this whenever a tag like `v3.6.0` is pushed.
 
 ## Never publish `data/`
 
-`index.php` contains no credentials, keys or personal data. Everything secret is created at first start and lives in `data/`. The `.gitignore` in this repository excludes it. Keep it that way.
+The code contains no credentials, keys or personal data. Everything secret is created at first start and lives in `data/`. The `.gitignore` in this repository excludes it. Keep it that way.
 
 ## Reporting security issues
 

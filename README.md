@@ -1,8 +1,8 @@
 # LinkVault
 
-Eine Lesezeichen-Verwaltung zum Selbsthosten in **einer einzigen PHP-Datei**. Keine Datenbank, keine Abhängigkeiten, kein Build-Schritt, keine Abrufe bei fremden Servern. Die Lesezeichen jedes Benutzers liegen mit AES-256-GCM verschlüsselt auf dem Server, und der Schlüssel dazu ist mit dem Passwort dieses Benutzers geschützt.
+Eine Lesezeichen-Verwaltung zum Selbsthosten in **reinem PHP**, installiert mit einer einzigen Datei. Keine Datenbank, keine Abhängigkeiten, kein Build-Schritt, keine Abrufe bei fremden Servern. Die Lesezeichen jedes Benutzers liegen mit AES-256-GCM verschlüsselt auf dem Server, und der Schlüssel dazu ist mit dem Passwort dieses Benutzers geschützt.
 
-`index.php` hochladen, im Browser öffnen, erstes Konto anlegen. Das ist die ganze Installation.
+`linkvault-install.php` hochladen, im Browser öffnen, erstes Konto anlegen. Das ist die ganze Installation.
 
 **English version: [README.en.md](README.en.md)**
 
@@ -56,13 +56,27 @@ In der Mehrfachauswahl markiert die `Leertaste` den Eintrag, `Umschalt` + Pfeilt
 
 ## Installation
 
-1. `index.php` in ein Verzeichnis auf deinem Webserver kopieren.
-2. PHP muss in dieses Verzeichnis schreiben dürfen (es legt daneben den Ordner `data/` an).
-3. Die Seite **sofort** aufrufen und das erste Konto anlegen. Dieses Konto ist der Administrator.
+1. Aus dem [neuesten Release](../../releases/latest) die Datei `linkvault-install.php` herunterladen und in ein Verzeichnis auf deinem Webserver kopieren.
+2. PHP muss in dieses Verzeichnis schreiben dürfen (es legt dort `index.php`, den Ordner `app/` und später `data/` an).
+3. `linkvault-install.php` **sofort** im Browser aufrufen und auf „Jetzt installieren“ klicken. Die Datei packt das Programm aus, löscht sich selbst und leitet weiter. Dort das erste Konto anlegen. Dieses Konto ist der Administrator.
 4. Prüfen, dass `data/` von außen nicht erreichbar ist (siehe „Den Datenordner schützen“).
 5. Unter *Werkzeuge → Konto & Sicherheit* einen Wiederherstellungscode anlegen und die Zwei-Faktor-Anmeldung einschalten.
 
 > Wer ein frisch hochgeladenes, noch nicht eingerichtetes LinkVault als Erster aufruft, wird Administrator. Schritt 3 also direkt nach dem Hochladen erledigen.
+
+**Lieber von Hand?** Im Release liegt auch `linkvault-<Version>.zip`. Entpacken und den Inhalt des Ordners `linkvault/` hochladen, also `index.php` **und** den Ordner `app/`. Wer das Repository klont, braucht genau diese beiden.
+
+### Aufbau
+
+```
+index.php      Einstieg und Einstellungen
+app/lib/       Funktionen (Speicher, Konten, Verschlüsselung, Anmeldung, Abrufe, Import, Oberfläche)
+app/routes/    Schrift, Icon, Manifest, Favicons und alle JSON-Aktionen
+app/views/     Anmeldeseite und Hauptseite (HTML, CSS, JavaScript)
+data/          entsteht beim ersten Start, hier liegt alles Geheime
+```
+
+Die Dateien in `app/` tun nichts, wenn man sie direkt aufruft, alles läuft über `index.php`. Unter Apache sperrt eine `.htaccess` den Ordner zusätzlich.
 
 ### Den Datenordner schützen
 
@@ -177,7 +191,7 @@ Die ehrlichen Grenzen, damit du selbst entscheiden kannst:
 - **Die gespeicherten Seiten sehen die IP-Adresse deines Servers**, wenn LinkVault Titel oder Icon holt oder einen Link prüft.
 - **Der Administrator kann Konten samt Daten löschen**, und wer Dateizugriff auf den Server hat, kann das auch. Heb dir ein eigenes `.lvbak`-Backup auf.
 - **Kein Passwort, keine Daten.** Es gibt kein Zurücksetzen per E-Mail und keine Hintertür. Leg den Wiederherstellungscode an und verwahre ihn sicher.
-- Das ist ein Hobbyprojekt. Es wurde nicht von einer unabhängigen Sicherheitsfirma geprüft. Der Code ist eine einzige lesbare Datei, schau also gern selbst nach.
+- Das ist ein Hobbyprojekt. Es wurde nicht von einer unabhängigen Sicherheitsfirma geprüft. Der Code ist lesbares PHP ohne Abhängigkeiten, schau also gern selbst nach.
 
 ## Backups
 
@@ -202,11 +216,25 @@ Ein paar Konstanten ganz oben in `index.php`:
 
 ## Aktualisieren
 
-`index.php` durch die neue Fassung ersetzen. `data/` bleibt, wie es ist. Ältere Datenformate werden bei der nächsten Anmeldung von selbst umgestellt.
+Die neue `linkvault-install.php` hochladen und aufrufen. Sie erkennt die vorhandene Installation, ersetzt nur `index.php` und `app/` und löscht sich wieder. `data/` bleibt, wie es ist. Ältere Datenformate werden bei der nächsten Anmeldung von selbst umgestellt.
+
+Von Hand geht es genauso: `index.php` und den Ordner `app/` durch die neue Fassung ersetzen.
+
+**Von 3.5.0 oder älter:** Bis dahin bestand LinkVault nur aus der `index.php`. Seitdem gehört der Ordner `app/` dazu. Wer nur die `index.php` austauscht, bekommt einen Hinweis, dass `app/` fehlt. Eigene Werte in den Konstanten oben in der `index.php` danach wieder eintragen.
+
+### Ein Release bauen
+
+Nur für Leute, die LinkVault selbst weitergeben wollen, zum Benutzen braucht das niemand:
+
+```bash
+php tools/build-release.php
+```
+
+Das legt `dist/linkvault-install.php` und `dist/linkvault-<Version>.zip` an. Im Repository erledigt das ein Workflow, sobald ein Tag wie `v3.6.0` gepusht wird.
 
 ## `data/` niemals veröffentlichen
 
-`index.php` enthält keine Zugangsdaten, Schlüssel oder persönlichen Angaben. Alles Geheime entsteht beim ersten Start und liegt in `data/`. Die `.gitignore` in diesem Repository schließt den Ordner aus. Das soll so bleiben.
+Der Code enthält keine Zugangsdaten, Schlüssel oder persönlichen Angaben. Alles Geheime entsteht beim ersten Start und liegt in `data/`. Die `.gitignore` in diesem Repository schließt den Ordner aus. Das soll so bleiben.
 
 ## Sicherheitslücken melden
 
