@@ -1,9 +1,20 @@
-# Baut bei jedem Versions-Tag (z. B. v3.6.0) die Release-Dateien und hängt sie an ein GitHub-Release.
+# Baut die Release-Dateien (Installer + ZIP) und hängt sie an ein GitHub-Release.
+#
+# Zwei Wege:
+#   1. Von Hand: Actions → Release → "Run workflow". Ohne Angabe heißt der Tag LinkVault-<Version aus index.php>.
+#   2. Automatisch, sobald ein Tag wie LinkVault-3.6.0 (oder v3.6.0) gepusht wird.
+# Gibt es das Release zu dem Tag schon, werden die Dateien nur angehängt bzw. ersetzt.
 name: Release
 
 on:
   push:
-    tags: ['v*']
+    tags: ['LinkVault-*', 'v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag für das Release (leer = LinkVault-<Version aus index.php>)'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -13,9 +24,35 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Tag bestimmen
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            TAG="$GITHUB_REF_NAME"
+          elif [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG="LinkVault-$(sed -n "s/^define('LV_VERSION', '\([^']*\)');.*/\1/p" index.php)"
+          fi
+          case "$TAG" in
+            *[!A-Za-z0-9._-]*|''|LinkVault-) echo "Ungültiger Tag: $TAG"; exit 1 ;;
+          esac
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          # Gibt es den Tag schon, wird genau dieser Stand gebaut
+          git fetch --tags --quiet
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then git checkout --quiet "refs/tags/$TAG"; fi
       - name: Dateien bauen
         run: php tools/build-release.php
-      - name: Release anlegen
+      - name: Release anlegen oder ergänzen
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/linkvault-install.php dist/linkvault-*.zip --title "LinkVault ${GITHUB_REF_NAME#v}" --generate-notes
+        run: |
+          NAME="${TAG#v}"; NAME="LinkVault ${NAME#LinkVault-}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/linkvault-install.php dist/linkvault-*.zip --clobber
+          else
+            gh release create "$TAG" dist/linkvault-install.php dist/linkvault-*.zip --title "$NAME" --generate-notes --target "$(git rev-parse HEAD)"
+          fi
