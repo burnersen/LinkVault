@@ -15,8 +15,11 @@ Upload `index.php`, open it in the browser, create the first account. That's the
 ## Features
 
 - Bookmarks with nested folders, tags, favourites, notes, full-text search
-- Import from browser bookmark files (HTML), export as HTML or JSON
+- Import from browser bookmark files (HTML, including very large ones and Firefox notes), export as HTML or JSON
 - Trash with 30 days retention, duplicate finder, dead-link checker
+- Auto-sort (Tools → Auto-sort): suggests tags and folders without any AI and without outside services. It goes by groups of domains and keywords (YouTube → video, GitHub → dev, “*xxx*” → NSFW, …) and the way you have sorted so far. The groups are one single list you can change, extend and delete completely, “Restore defaults” brings back the original. You get a preview to tick off first, a backup is made before anything changes, and there is an undo button afterwards.
+- Tag bar below the folders: tap a tag to filter by it, several can be combined (can be switched off under View)
+- Manage tags and manage folders: rename, merge, delete. Deleting always keeps the links, and there is an undo button afterwards.
 - Automatic daily snapshots plus a snapshot before every bulk action
 - Encrypted full backup as a single downloadable file (`.lvbak`)
 - Multiple users, each with their own key and their own separate vault
@@ -116,6 +119,7 @@ random 256-bit data key (DEK) ◀──unwrapped with AES-256-GCM─────
 | `data/bookmarks.json`, `data/users/<id>/bookmarks.json` | bookmarks | No (AES-256-GCM) |
 | `…/backups/*.json` | snapshots of the above | No (AES-256-GCM) |
 | `data/lv_auth.json`, `…/auth.json` | user name, password hash (`password_hash`, bcrypt), salt, wrapped data key, encrypted TOTP secret, settings | User name and settings yes, everything secret no |
+| `data/autosort.json`, `…/autosort.json` | your version of the auto-sort groups | No (AES-256-GCM) |
 | `data/ui.json`, `…/ui.json` | per-user interface settings: colour scheme, language, layout, sorting | Yes (nothing secret) |
 | `…/state.json` | account status (pending / active / blocked), timestamps, sealed registration note | Status and timestamps yes |
 | `…/attempts.log` | login history: time, IP address, attempted name | No, if `sodium` is available (see below) |

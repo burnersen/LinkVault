@@ -13,8 +13,11 @@ Eine Lesezeichen-Verwaltung zum Selbsthosten in **einer einzigen PHP-Datei**. Ke
 ## Funktionen
 
 - Lesezeichen mit verschachtelten Ordnern, Schlagwörtern, Favoriten, Notizen und Volltextsuche
-- Import aus Lesezeichen-Dateien der Browser (HTML), Export als HTML oder JSON
+- Import aus Lesezeichen-Dateien der Browser (HTML, auch sehr große, samt Notizen aus Firefox), Export als HTML oder JSON
 - Papierkorb mit 30 Tagen Aufbewahrung, Duplikat-Suche, Prüfung auf tote Links
+- Automatisch sortieren (Werkzeuge → Automatisch sortieren): schlägt Tags und Ordner vor, ganz ohne KI und ohne fremde Dienste. Grundlage sind Gruppen mit Domains und Stichwörtern (YouTube → Video, Chefkoch → Kochen, „*xxx*“ → NSFW, …) und deine bisherige Sortierung. Die Gruppen sind eine einzige Liste, die du komplett ändern, ergänzen und löschen kannst, „Standard wiederherstellen“ holt die Originalfassung zurück. Erst kommt eine Vorschau zum Abhaken, vorher wird ein Backup angelegt, danach gibt es „Rückgängig“.
+- Tag-Leiste unter den Ordnern: Antippen filtert nach dem Tag, mehrere lassen sich kombinieren (abschaltbar unter Ansicht)
+- Tags verwalten und Ordner verwalten: umbenennen, zusammenlegen, löschen. Beim Löschen bleiben die Links immer erhalten, danach gibt es „Rückgängig“.
 - Automatische Tagesstände und ein Stand vor jeder größeren Aktion
 - Verschlüsseltes Komplett-Backup als einzelne Datei zum Herunterladen (`.lvbak`)
 - Mehrere Benutzer, jeder mit eigenem Schlüssel und eigenem, getrenntem Bereich
@@ -114,6 +117,7 @@ zufälliger 256-Bit-Datenschlüssel (DEK) ◀──mit AES-256-GCM ausgepackt─
 | `data/bookmarks.json`, `data/users/<id>/bookmarks.json` | Lesezeichen | Nein (AES-256-GCM) |
 | `…/backups/*.json` | ältere Stände davon | Nein (AES-256-GCM) |
 | `data/lv_auth.json`, `…/auth.json` | Benutzername, Passwort-Hash (`password_hash`, bcrypt), Salt, verpackter Datenschlüssel, verschlüsseltes TOTP-Geheimnis, Einstellungen | Benutzername und Einstellungen ja, alles Geheime nein |
+| `data/autosort.json`, `…/autosort.json` | deine Fassung der Gruppen fürs automatische Sortieren | Nein (AES-256-GCM) |
 | `data/ui.json`, `…/ui.json` | Einstellungen der Oberfläche je Benutzer: Design, Sprache, Ansicht, Sortierung | Ja (nichts Geheimes) |
 | `…/state.json` | Stand des Kontos (wartet / aktiv / gesperrt), Zeitpunkte, verschlossene Nachricht der Anfrage | Stand und Zeitpunkte ja |
 | `…/attempts.log` | Anmelde-Protokoll: Zeit, IP-Adresse, versuchter Name | Nein, sofern `sodium` vorhanden ist (siehe unten) |
