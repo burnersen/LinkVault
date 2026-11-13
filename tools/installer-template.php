@@ -3,7 +3,8 @@
  * LinkVault – Installer (Version @@VERSION@@)
  *
  * Diese eine Datei enthält das ganze Programm. Hochladen, im Browser aufrufen, fertig:
- * Sie legt index.php und den Ordner app/ neben sich an und löscht sich danach selbst.
+ * Sie legt index.php und den Ordner app/ neben sich an und löscht sich danach selbst,
+ * ebenso ein LinkVault-ZIP aus dem Release, falls eines daneben liegt.
  * Bei einem Update werden nur die Programmdateien ersetzt, der Ordner data/ wird nie angefasst.
  *
  * Erzeugt von tools/build-release.php, nicht von Hand bearbeiten.
@@ -103,6 +104,15 @@ function lviInstall($dir, array $files) {
     return '';
 }
 
+/** LinkVault-ZIPs aus dem Release, die neben dem Installer liegen (werden nach der Installation nicht mehr gebraucht) */
+function lviZips($dir) {
+    $out = array();
+    foreach ((array)@glob($dir . '/linkvault-*.zip') as $z) {
+        if (is_file($z) && preg_match('~^linkvault-[0-9][0-9A-Za-z.\-]*\.zip$~', basename($z))) $out[] = $z;
+    }
+    return $out;
+}
+
 $lviDir = __DIR__;
 $lviSelf = __FILE__;
 $lviIndex = $lviDir . '/index.php';
@@ -138,6 +148,7 @@ if (!$lviProblems && (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METH
                       . lviT('. Es wurde nichts verändert.', '. Nothing has been changed.');
         } else {
             $lviDone = true;
+            foreach (lviZips($lviDir) as $z) @unlink($z);
             if (!$lviSelfIsIndex) {
                 @unlink($lviSelf);
                 clearstatcache();
@@ -206,6 +217,9 @@ $lviTitle = $lviOld ? lviT('LinkVault aktualisieren', 'Update LinkVault') : lviT
         <li><?php echo lviT('Der Ordner <code>data/</code> mit deinen Konten und Links bleibt unangetastet.', 'The folder <code>data/</code> with your accounts and links is left untouched.'); ?></li>
 <?php endif; ?>
         <li><?php echo lviH(lviT('Danach löscht sich diese Installer-Datei selbst.', 'Afterwards this installer file deletes itself.')); ?></li>
+<?php foreach (lviZips($lviDir) as $z): ?>
+        <li><?php echo lviT('Auch <code>', 'Also <code>') . lviH(basename($z)) . lviT('</code> wird gelöscht, die Datei wird dann nicht mehr gebraucht.', '</code> is deleted, the file is no longer needed then.'); ?></li>
+<?php endforeach; ?>
 <?php if (!$lviOld && !$lviHasData): ?>
         <li><?php echo lviH(lviT('Gleich im Anschluss legst du das erste Konto an. Wer das als Erster tut, wird Administrator, also nicht aufschieben.', 'Right afterwards you create the first account. Whoever does that first becomes the administrator, so do not put it off.')); ?></li>
 <?php endif; ?>
