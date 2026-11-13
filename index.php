@@ -3087,6 +3087,37 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
             outline: 2px solid #a78bfa; outline-offset: 1px;
             box-shadow: 0 0 14px -2px rgba(139, 92, 246, 0.55);
         }
+        /* Hilfe mit den Tastenkürzeln (Taste H) */
+        .kb-help {
+            position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 95;
+            width: max-content; max-width: calc(100vw - 2rem); max-height: calc(100vh - 2rem); overflow: auto;
+            padding: 1rem 1.25rem 1.1rem; border-radius: 1rem; cursor: pointer;
+            background: var(--lv-raised, rgba(30, 41, 59, 0.97)); color: var(--lv-t2, #e2e8f0);
+            border: 1px solid var(--lv-line2, rgba(71, 85, 105, 0.7));
+            box-shadow: 0 25px 50px -12px var(--lv-shadow, rgba(0, 0, 0, 0.5));
+            backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+            font-size: 0.8125rem; animation: kbHelpIn 0.15s ease-out;
+        }
+        @keyframes kbHelpIn { from { opacity: 0; } to { opacity: 1; } }
+        .kb-help-title { font-size: 0.95rem; font-weight: 600; color: var(--lv-t1, #f1f5f9); margin-bottom: 0.25rem; }
+        .kb-help-cols { display: flex; flex-wrap: wrap; gap: 0 2.25rem; }
+        .kb-help-head {
+            font-size: 0.6875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+            color: var(--lv-t3, #94a3b8); margin: 0.75rem 0 0.35rem;
+        }
+        .kb-help-row { display: flex; align-items: center; gap: 0.75rem; padding: 0.2rem 0; white-space: nowrap; }
+        .kb-help-keys { display: inline-flex; gap: 0.25rem; min-width: 7.75rem; }
+        .kb-help kbd {
+            display: inline-block; min-width: 1.6rem; padding: 0.1rem 0.4rem; text-align: center;
+            font: 600 0.75rem/1.35 inherit; font-family: inherit; border-radius: 0.375rem;
+            background: var(--lv-field, rgba(15, 23, 42, 0.7)); color: var(--lv-t1, #f1f5f9);
+            border: 1px solid var(--lv-line2, rgba(71, 85, 105, 0.7)); border-bottom-width: 2px;
+        }
+        .kb-help-bar {
+            height: 2px; margin-top: 0.9rem; border-radius: 2px; background: var(--lv-a, #8b5cf6);
+            transform-origin: left; animation: kbHelpBar 10s linear forwards;
+        }
+        @keyframes kbHelpBar { from { transform: scaleX(1); } to { transform: scaleX(0); } }
         /* Tastatur-Rahmen in der Mehrfachauswahl (Pfeiltasten) */
         body.select-mode .bookmark-card.kb-cursor { outline: 2px dashed #c4b5fd; outline-offset: 2px; }
 
@@ -5836,6 +5867,7 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
     /* ---------- Tastatur ---------- */
     document.addEventListener('keydown', e => {
         if (e.key === 'Escape') {
+            if (kbHelp(false)) return;
             if (!confirmOverlay.classList.contains('hidden')) { closeConfirm(false); return; }
             if (!dialogOverlay.classList.contains('hidden')) { closeDialog(); return; }
             if (anyOverlayOpen()) {
@@ -5852,7 +5884,8 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
         const t = e.target;
         const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
         if (typing || e.metaKey || e.ctrlKey || e.altKey || anyOverlayOpen()) return;
-        if (e.key === '/') { e.preventDefault(); searchInput.focus(); searchInput.select(); }
+        if (e.key === '/' || e.key === 's') { e.preventDefault(); searchInput.focus(); searchInput.select(); }
+        else if (e.key === 'h') { e.preventDefault(); kbHelp(); }
         else if (e.key === 'n') { e.preventDefault(); openAddModal(); }
         else if (e.key === 'v') {
             viewMode = { cards: 'list', list: 'compact', compact: 'cards' }[viewMode];
@@ -5867,6 +5900,50 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
        Normal: Maus über einem Eintrag, dann Entf = löschen, F = Favorit, C = URL kopieren, E = bearbeiten.
        Mehrfachauswahl: Pfeiltasten wandern, Leertaste markiert, Umschalt+Pfeil markiert mit,
        A = alle angezeigten, Entf = markierte löschen. */
+    // Hilfe mit allen Tastenkürzeln: H blendet sie ein, nach 10 Sekunden (oder H, Esc, Klick) ist sie wieder weg.
+    // Rückgabe: true, wenn dabei eine offene Hilfe geschlossen wurde.
+    let kbHelpEl = null, kbHelpTimer = 0;
+    function kbHelp(show) {
+        const open = !!kbHelpEl;
+        if (open) { clearTimeout(kbHelpTimer); kbHelpEl.remove(); kbHelpEl = null; }
+        if (show === false || (show === undefined && open)) return open;
+        const row = (keys, text) => `<div class="kb-help-row"><span class="kb-help-keys">${keys.map(k => `<kbd>${k}</kbd>`).join('')}</span><span>${text}</span></div>`;
+        kbHelpEl = document.createElement('div');
+        kbHelpEl.className = 'kb-help';
+        kbHelpEl.setAttribute('role', 'dialog');
+        kbHelpEl.innerHTML = `
+            <div class="kb-help-title">Tastenkürzel</div>
+            <div class="kb-help-cols">
+                <div>
+                    <div class="kb-help-head">Überall</div>
+                    ${row(['S'], 'Suchen')}
+                    ${row(['N'], 'Neuen Link anlegen')}
+                    ${row(['V'], 'Ansicht wechseln')}
+                    ${row(['H'], 'Diese Hilfe')}
+                    ${row(['Esc'], 'Schließen, Suche leeren')}
+                    <div class="kb-help-head">Maus über einem Eintrag</div>
+                    ${row(['F'], 'Favorit')}
+                    ${row(['C'], 'URL kopieren')}
+                    ${row(['E'], 'Bearbeiten')}
+                    ${row(['Entf'], 'Löschen')}
+                </div>
+                <div>
+                    <div class="kb-help-head">Mehrfachauswahl</div>
+                    ${row(['↑', '↓', '←', '→'], 'Eintrag wechseln')}
+                    ${row(['Leertaste'], 'Markieren an/aus')}
+                    ${row(['⇧', '↑↓'], 'Beim Wandern markieren')}
+                    ${row(['A'], 'Alle angezeigten markieren')}
+                    ${row(['Entf'], 'Markierte löschen')}
+                </div>
+            </div>
+            <div class="kb-help-bar"></div>`;
+        kbHelpEl.addEventListener('click', () => kbHelp(false));
+        document.body.appendChild(kbHelpEl);
+        kbHelpTimer = setTimeout(() => kbHelp(false), 10000);
+        return open;
+    }
+    document.addEventListener('mousedown', e => { if (kbHelpEl && !kbHelpEl.contains(e.target)) kbHelp(false); });
+
     function kbSetCursor(card) {
         mainEl.querySelectorAll('.bookmark-card.kb-cursor').forEach(c => c.classList.remove('kb-cursor'));
         kbCursor = card ? { el: card, id: card.dataset.id } : null;
@@ -6820,6 +6897,11 @@ function lvUiFoot(): void {
         "Gespeichert": "Saved", "Gespeichert.": "Saved.", "Fehler": "Error", "Gelöscht": "Deleted", "Rückgängig": "Undo",
         "Löschen fehlgeschlagen": "Deleting failed", "Wiederhergestellt": "Restored", "Verschoben": "Moved",
         "Favoriten gesetzt": "Favorites updated", "Umbenannt": "Renamed", "Ordner aufgelöst": "Folder dissolved", "Erledigt": "Done",
+        "Tastenkürzel": "Keyboard shortcuts", "Überall": "Everywhere", "Suchen": "Search", "Neuen Link anlegen": "Add a new link",
+        "Ansicht wechseln": "Switch view", "Diese Hilfe": "This help", "Schließen, Suche leeren": "Close, clear search",
+        "Maus über einem Eintrag": "Mouse over an entry", "Eintrag wechseln": "Move between entries", "Markieren an/aus": "Select on/off",
+        "Beim Wandern markieren": "Select while moving", "Alle angezeigten markieren": "Select all shown", "Markierte löschen": "Delete selected",
+        "Entf": "Del", "Leertaste": "Space",
         "Das ist kein Web-Link": "This is not a web link", "Kopieren fehlgeschlagen": "Copying failed", "URL kopiert": "URL copied",
         "Keine Verbindung zum Server.": "No connection to the server.",
         "Sitzung abgelaufen, bitte neu anmelden": "Session expired, please sign in again",
