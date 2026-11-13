@@ -944,6 +944,7 @@ function listBackups(): array {
         'bulk_delete' => 'vor Mehrfach-Löschen', 'dedupe' => 'vor Duplikate entfernen',
         'import' => 'vor Import', 'restore' => 'vor Wiederherstellung',
         'delete_category' => 'vor Ordner löschen', 'autosort' => 'vor automatischem Sortieren',
+        'tags' => 'vor Tag-Änderung',
     ];
     $out = [];
     foreach (glob(lvBackupDir() . '/*.json') ?: [] as $file) {
@@ -2042,7 +2043,7 @@ if ($action) {
                  'import', 'rename_category', 'delete_category', 'backup_restore', 'backup_import', 'visit', 'set_status',
                  'trash_restore', 'trash_purge', 'change_password', 'totp_enable', 'totp_disable', 'recovery_create', 'settings_save',
                  'user_approve', 'user_reject', 'user_block', 'user_unblock', 'user_delete', 'register_toggle',
-                 'autosort_apply', 'autosort_rules_save'];
+                 'autosort_apply', 'autosort_rules_save', 'tag_rename', 'tag_delete'];
     $isMutating = in_array($action, $mutating, true);
     $lockFp = null;
     if ($isMutating) {
@@ -2057,7 +2058,7 @@ if ($action) {
     try {
         $dataActions = ['add', 'update', 'delete', 'bulk_delete', 'bulk_move', 'bulk_favorite', 'dedupe', 'toggle_favorite',
                         'import', 'rename_category', 'delete_category', 'visit', 'set_status', 'trash_restore', 'trash_purge',
-                        'autosort_apply'];
+                        'autosort_apply', 'tag_rename', 'tag_delete'];
         if ($LV_CORRUPT && in_array($action, $dataActions, true)) {
             throw new Exception('bookmarks.json ist beschädigt und wird nicht überschrieben. Bitte unter Werkzeuge → Backups einen Stand wiederherstellen.');
         }
@@ -2388,24 +2389,54 @@ if ($action) {
                 }
                 unset($bm);
                 if ($n === 0) throw new Exception('Ordner nicht gefunden.');
-                backupBefore('delete_category');
+                $backup = backupBefore('delete_category');
                 requireSave($bookmarks);
                 $target = $parent !== '' ? $parent : 'Allgemein';
-                jsonOut(['success' => true, 'message' => "Ordner aufgelöst, $n Link(s) liegen jetzt in „{$target}“.", 'bookmarks' => $bookmarks]);
+                jsonOut(['success' => true, 'message' => "Ordner gelöscht, $n Link(s) liegen jetzt in „{$target}“.", 'bookmarks' => $bookmarks, 'backup' => $backup]);
+
+            /* ----- Tags verwalten: umbenennen (gleicher Name = zusammenlegen) und löschen. Die Links bleiben immer. ----- */
+
+            case 'tag_rename':
+            case 'tag_delete':
+                $old = (string)($_POST['tag'] ?? '');
+                if (trim($old) === '') throw new Exception('Tag fehlt.');
+                $new = '';
+                if ($action === 'tag_rename') {
+                    $clean = cleanTags([(string)($_POST['new'] ?? '')]);
+                    if (!$clean) throw new Exception('Neuer Name fehlt.');
+                    $new = $clean[0];
+                    if ($new === $old) throw new Exception('Keine Änderung.');
+                }
+                $n = 0;
+                foreach ($bookmarks as &$bm) {
+                    if (empty($bm['tags']) || !is_array($bm['tags']) || !in_array($old, $bm['tags'], true)) continue;
+                    $list = [];
+                    foreach ($bm['tags'] as $t) {
+                        if ($t === $old) { if ($new !== '') $list[] = $new; }
+                        else $list[] = $t;
+                    }
+                    $list = cleanTags($list);
+                    if ($list) $bm['tags'] = $list; else unset($bm['tags']);
+                    $n++;
+                }
+                unset($bm);
+                if ($n === 0) throw new Exception('Tag nicht gefunden.');
+                $backup = backupBefore('tags');
+                requireSave($bookmarks);
+                jsonOut(['success' => true, 'bookmarks' => $bookmarks, 'backup' => $backup,
+                         'message' => $action === 'tag_delete' ? "Tag „{$old}“ bei $n Link(s) entfernt." : "Tag „{$old}“ heißt jetzt „{$new}“ ($n Links)."]);
 
             /* ----- Automatisch sortieren (Block „Neu in 3.4“ am Dateiende) ----- */
 
             case 'autosort_rules':
-                $rs = lvAutoSortLoad();
-                jsonOut(['success' => true, 'rules' => $rs['rules'], 'cats' => $rs['cats'], 'broken' => $rs['broken']]);
+                jsonOut(['success' => true] + lvAutoSortLoad());
 
             case 'autosort_rules_save':
-                $rs = lvAutoSortClean([
-                    'rules' => json_decode((string)($_POST['rules'] ?? ''), true),
-                    'cats' => json_decode((string)($_POST['cats'] ?? ''), true),
-                ]);
-                if (!lvAutoSortSave($rs)) throw new Exception('Speichern fehlgeschlagen (Schreibrechte?).');
-                jsonOut(['success' => true, 'message' => 'Regeln gespeichert.', 'rules' => $rs['rules'], 'cats' => $rs['cats']]);
+                $groups = json_decode((string)($_POST['groups'] ?? ''), true);
+                if (!is_array($groups)) throw new Exception('Keine Gruppen übergeben.');
+                $groups = lvAutoSortCleanGroups($groups);
+                if (!lvAutoSortSave($groups)) throw new Exception('Speichern fehlgeschlagen (Schreibrechte?).');
+                jsonOut(['success' => true, 'message' => 'Gruppen gespeichert.', 'groups' => $groups]);
 
             case 'autosort_apply':
                 // Die Vorschläge rechnet der Browser aus, hier wird nur übernommen, was angehakt war.
@@ -3513,6 +3544,18 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
         #subCatBar::-webkit-scrollbar { display: none; }
         #subCatBar:empty { display: none; }
         #subCatBar .cat-btn { padding: 0.25rem 0.6rem; font-size: 0.68rem; }
+        /* Tag-Leiste (3.4): wie die Unterordner, Tags in Violett */
+        #tagBar {
+            display: flex; gap: 0.3rem; overflow-x: auto; margin-top: 0.35rem; padding-bottom: 3px;
+            scrollbar-width: none; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; touch-action: pan-x; cursor: grab;
+        }
+        #tagBar::-webkit-scrollbar { display: none; }
+        #tagBar:empty { display: none; }
+        #tagBar .cat-btn { padding: 0.25rem 0.6rem; font-size: 0.68rem; flex-shrink: 0; }
+        #tagBar .cat-btn.tagb:not(.active) { color: #c4b5fd; }
+        html.lvt #tagBar .cat-btn.tagb:not(.active) { color: var(--lv-at); }
+        #tagBar .cat-btn.tagm { display: inline-flex; align-items: center; gap: 0.25rem; }
+        #tagBar .cat-btn.tagm svg { width: 0.8rem; height: 0.8rem; }
 
         /* Ansicht „Liste“: eine Zeile pro Link */
         body.view-list .bookmarks-grid, body.view-list .domain-group-body { grid-template-columns: 1fr !important; gap: 0.3rem; }
@@ -3633,21 +3676,16 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
         html body .bm-chip.as-folder { color: var(--lv-ok-t, #6ee7b7); background: var(--lv-ok-bg, rgba(6, 78, 59, 0.35)); border-color: var(--lv-ok-line, rgba(16, 185, 129, 0.4)); }
         .as-sum .bm-chip { font-size: 11px; padding: 0.15rem 0.45rem; }
         .as-why { display: block; font-size: 10.5px; line-height: 1.4; color: var(--lv-t4, #64748b); margin-top: 0.25rem; }
-        .as-rule { display: grid; grid-template-columns: 1fr 1fr auto; gap: 0.35rem; align-items: center; }
-        .as-rule #ruleM { grid-column: 1 / -1; }
-        .as-cat { display: grid; grid-template-columns: auto minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1fr); gap: 0.35rem; align-items: center; }
-        .as-rule .field, .as-cat .field { padding: 0.35rem 0.5rem; font-size: 0.8rem; min-width: 0; }
-        .as-rule .btn { padding: 0.4rem 0.7rem; font-size: 0.8rem; }
-        .as-cat-name { font-size: 0.8rem; color: var(--lv-t2, #e2e8f0); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .as-cat.as-dim .field, .as-cat.as-dim .as-cat-name { opacity: 0.45; }
-        @media (max-width: 560px) {
-            .as-rule { grid-template-columns: 1fr 1fr; }
-            .as-rule .btn { grid-column: span 2; }
-            .as-cat { grid-template-columns: auto 1fr 1fr; }
-            .as-cat .as-cat-name { grid-column: 2 / span 2; }
-            .as-cat .as-ct { grid-column: 2; }
-            .as-cat .as-cf { grid-column: 3; }
-        }
+        .as-grp .as-on { accent-color: #8b5cf6; width: 1rem; height: 1rem; flex-shrink: 0; cursor: pointer; }
+        .as-grp-head { flex: 1 1 auto; min-width: 0; text-align: left; background: none; border: 0; padding: 0; cursor: pointer; color: inherit; }
+        .as-grp.as-dim .as-grp-head { opacity: 0.45; }
+        .as-grp-edit { margin-top: 0.35rem; }
+        .as-grp-edit .field { padding: 0.4rem 0.55rem; font-size: 0.82rem; }
+        .as-grp-edit textarea.field { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.78rem; line-height: 1.45; resize: vertical; }
+        .as-two { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+        @media (max-width: 560px) { .as-two { grid-template-columns: 1fr; } }
+        .btn.lv-mini { padding: 0.35rem 0.65rem; font-size: 0.75rem; border-radius: 0.5rem; }
+        .as-help p b { color: var(--lv-t1, #e2e8f0); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-weight: 600; }
         @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
     </style>
 <?php if (!LV_TAILWIND_CDN): ?>
@@ -3706,6 +3744,7 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
                         <button type="button" class="menu-opt" data-sort="domain">Nach Domain</button>
                         <button type="button" class="menu-opt" data-sort="folder">Nach Ordner</button>
                         <button type="button" class="menu-opt" id="optFavTop">Favoriten immer oben</button>
+                        <button type="button" class="menu-opt" id="optTagBar">Tag-Leiste anzeigen</button>
                         <div class="menu-sep"></div>
                         <div class="menu-label">Gruppieren</div>
                         <button type="button" class="menu-opt" data-group="domain">Domains mit vielen Links</button>
@@ -3748,6 +3787,10 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
                         <button type="button" id="btnFolders" class="menu-opt">
                             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
                             Ordner verwalten
+                        </button>
+                        <button type="button" id="btnTags" class="menu-opt">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 20l4-16m2 16l4-16M6 9h14M4 15h14"/></svg>
+                            Tags verwalten
                         </button>
                         <button type="button" id="btnTrash" class="menu-opt">
                             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
@@ -3799,6 +3842,7 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
         <div class="mt-2.5 w-full min-w-0 overflow-hidden header-cats">
             <div id="categoryBar"></div>
             <div id="subCatBar"></div>
+            <div id="tagBar" aria-label="Tags"></div>
         </div>
     </div>
 </header>
@@ -4049,7 +4093,7 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
             </button>
         </div>
         <div class="p-4 overflow-y-auto flex-1">
-            <p class="text-sm text-slate-400 mb-3 leading-relaxed">Namen ändern und mit Enter oder dem Haken speichern. Beim Auflösen wandern die Links nach „Allgemein“, gelöscht wird nichts.</p>
+            <p class="text-sm text-slate-400 mb-3 leading-relaxed">Namen ändern und mit „Speichern“ oder Enter übernehmen. „Löschen“ entfernt nur den Ordner, die Links darin bleiben und kommen nach „Allgemein“ (bei Unterordnern eine Ebene höher).</p>
             <div id="foldersList" class="space-y-1.5"></div>
         </div>
     </div>
@@ -4065,12 +4109,12 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
             </button>
         </div>
         <div class="p-4 overflow-y-auto flex-1">
-            <p class="text-sm text-slate-400 mb-3 leading-relaxed">Vorschläge nach Domain, Stichwörtern, deiner bisherigen Sortierung und deinen eigenen Regeln. Geändert wird erst, wenn du auf „Übernehmen“ tippst, vorher wird automatisch ein Backup angelegt.</p>
+            <p class="text-sm text-slate-400 mb-3 leading-relaxed">Vorschläge nach Domain, Stichwörtern, deinen Gruppen und deiner bisherigen Sortierung. Geändert wird erst, wenn du auf „Übernehmen“ tippst, vorher wird automatisch ein Backup angelegt.</p>
             <div class="box mb-3 as-opts">
                 <label class="as-opt"><input type="checkbox" id="autoOptTags" checked> <span>Tags vorschlagen (vorhandene Tags bleiben)</span></label>
                 <label class="as-opt"><input type="checkbox" id="autoOptFolders" checked> <span>Ordner vorschlagen für unsortierte Links („Allgemein“)</span></label>
                 <label class="as-opt"><input type="checkbox" id="autoOptMove"> <span>Auch Links umsortieren, die schon in einem Ordner liegen</span></label>
-                <button type="button" id="autoRulesBtn" class="btn btn-secondary w-full mt-2">Eigene Regeln und Stichwörter</button>
+                <button type="button" id="autoRulesBtn" class="btn btn-secondary w-full mt-2">Gruppen und Stichwörter bearbeiten</button>
             </div>
             <p class="text-sm text-slate-300 mb-2 font-medium" id="autoHint"></p>
             <div id="autoSummary" class="as-sum"></div>
@@ -4083,37 +4127,55 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
     </div>
 </div>
 
-<!-- EIGENE REGELN -->
+<!-- GRUPPEN FÜRS AUTOMATISCHE SORTIEREN -->
 <div id="rulesOverlay" class="fixed inset-0 z-[78] hidden items-center justify-center p-3 bg-black/65 backdrop-blur-sm">
     <div class="modal-panel w-full max-w-lg glass-strong rounded-2xl shadow-2xl overflow-hidden max-h-[85vh] flex flex-col">
         <div class="px-4 py-3.5 border-b border-slate-700/45 flex items-center justify-between shrink-0">
-            <h3 class="text-base font-semibold text-white">Eigene Regeln und Stichwörter</h3>
+            <h3 class="text-base font-semibold text-white">Gruppen und Stichwörter</h3>
             <button type="button" id="rulesClose" class="btn btn-ghost" aria-label="Schließen">
                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
             </button>
         </div>
         <div class="p-4 overflow-y-auto flex-1">
-            <div class="box mb-3">
-                <h4>Eigene Regeln</h4>
-                <p>Kommt das Stichwort irgendwo in Adresse, Titel oder Beschreibung vor, gibt es die Tags und den Ordner. Groß- und Kleinschreibung ist egal. Steht ein Punkt drin (z. B. „meinebank.de“), zählt nur die Domain. Deine Regeln gehen immer vor.</p>
-                <div id="rulesList" class="space-y-1.5 mb-2"></div>
-                <div class="as-rule as-rule-new">
-                    <input type="text" id="ruleM" class="field" maxlength="100" placeholder="Stichwort oder Domain, z. B. xxx" autocomplete="off">
-                    <input type="text" id="ruleT" class="field" maxlength="200" placeholder="Tags, z. B. nsfw" autocomplete="off">
-                    <input type="text" id="ruleF" class="field" maxlength="250" placeholder="Ordner (freiwillig)" autocomplete="off" list="ruleFolderList">
-                    <button type="button" id="ruleAdd" class="btn btn-primary">Hinzufügen</button>
-                </div>
-                <datalist id="ruleFolderList"></datalist>
+            <p class="text-sm text-slate-400 mb-3 leading-relaxed">Passt ein Eintrag einer Gruppe zum Link, schlägt sie ihre Tags und ihren Ordner vor. Alles lässt sich ändern, abschalten oder löschen.</p>
+            <div class="flex gap-2 mb-2">
+                <button type="button" id="grpNew" class="btn btn-primary flex-1">Neue Gruppe</button>
+                <button type="button" id="grpReset" class="btn btn-secondary flex-1">Standard wiederherstellen</button>
             </div>
-            <div class="box">
-                <h4>Eingebaute Gruppen</h4>
-                <p>Bekannte Seiten und typische Stichwörter. Haken weg = Gruppe wird nicht benutzt. Tag und Ordner kannst du umbenennen, leerer Ordner = nur Tag.</p>
-                <div id="catsList" class="space-y-1.5"></div>
+            <input type="search" id="grpFilter" class="field mb-2" placeholder="Suchen: Name, Tag, Domain oder Stichwort" aria-label="Gruppen durchsuchen" autocomplete="off">
+            <div id="grpList" class="space-y-1.5"></div>
+            <datalist id="ruleFolderList"></datalist>
+            <div class="box mt-3 as-help">
+                <h4>So schreibst du Einträge</h4>
+                <p><b>youtube.com</b> <span>= diese Domain samt Unterseiten</span><br>
+                   <b>amazon.*</b> <span>= jede Endung, also amazon.de, amazon.com usw.</span><br>
+                   <b>.xxx</b> <span>= alle Domains mit dieser Endung</span><br>
+                   <b>rezept</b> <span>= ganzes Wort in Titel, Adresse oder Beschreibung</span><br>
+                   <b>programmier*</b> <span>= Wortanfang, also auch „programmieren“</span><br>
+                   <b>*xxx*</b> <span>= steht irgendwo, auch mitten im Wort</span></p>
+                <p>Für den Ordner zählen Treffer über die Domain vor Stichwörtern. Sonst gewinnt die Gruppe weiter oben.</p>
             </div>
         </div>
         <div class="px-4 py-3 border-t border-slate-700/45 flex gap-2 shrink-0">
             <button type="button" id="rulesCancel" class="btn btn-secondary flex-1">Abbrechen</button>
             <button type="button" id="rulesSave" class="btn btn-primary flex-1">Speichern</button>
+        </div>
+    </div>
+</div>
+
+<!-- TAGS VERWALTEN -->
+<div id="tagsOverlay" class="fixed inset-0 z-[75] hidden items-center justify-center p-3 bg-black/65 backdrop-blur-sm">
+    <div class="modal-panel w-full max-w-md glass-strong rounded-2xl shadow-2xl overflow-hidden max-h-[85vh] flex flex-col">
+        <div class="px-4 py-3.5 border-b border-slate-700/45 flex items-center justify-between shrink-0">
+            <h3 class="text-base font-semibold text-white">Tags verwalten</h3>
+            <button type="button" id="tagsClose" class="btn btn-ghost" aria-label="Schließen">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+        </div>
+        <div class="p-4 overflow-y-auto flex-1">
+            <p class="text-sm text-slate-400 mb-3 leading-relaxed">Namen ändern und mit „Speichern“ oder Enter übernehmen. Heißt er dann wie ein anderer Tag, werden beide zusammengelegt. „Löschen“ nimmt den Tag von allen Links, die Links selbst bleiben.</p>
+            <input type="search" id="tagsFilter" class="field mb-2" placeholder="Tags durchsuchen" aria-label="Tags durchsuchen" autocomplete="off">
+            <div id="tagsList" class="space-y-1.5"></div>
         </div>
     </div>
 </div>
@@ -4373,6 +4435,7 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
     let viewMode = oneOf(store.get('lv_view', 'cards'), ['cards', 'list', 'compact'], 'cards');
     let groupMode = oneOf(store.get('lv_group', 'domain'), ['domain', 'folder', 'none'], 'domain');
     let favTop = store.get('lv_favtop', '1') === '1';
+    let tagBarOn = store.get('lv_tagbar', '1') !== '0';
     let editingId = null;
     let formFavorite = false;
     let selectMode = false;
@@ -4395,6 +4458,7 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
     const searchInput = $('#searchInput');
     const categoryBar = $('#categoryBar');
     const subCatBar = $('#subCatBar');
+    const tagBar = $('#tagBar');
     const mainEl = document.querySelector('main');
     const favoritesSection = $('#favoritesSection');
     const favoritesGrid = $('#favoritesGrid');
@@ -4541,7 +4605,18 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
     function bookmarkSearchText(bm) {
         return [bm.title, bm.url, bm.description, bm.category, getDomain(bm.url || ''), (bm.tags || []).join(' ')].filter(Boolean).join(' ');
     }
-    // Suche: normale Wörter überall, „#wort“ nur in den Schlagwörtern
+    // Alle vorhandenen Tags (normalisiert), neu berechnet, sobald sich die Liste ändert
+    let tagSetSrc = null, tagSet = new Set();
+    function knownTags() {
+        if (tagSetSrc !== bookmarks) {
+            tagSetSrc = bookmarks;
+            tagSet = new Set();
+            bookmarks.forEach(b => { if (!b.deleted) (b.tags || []).forEach(t => tagSet.add(normalizeText(t))); });
+        }
+        return tagSet;
+    }
+    // Suche: normale Wörter überall, „#wort“ nur in den Schlagwörtern.
+    // Gibt es genau diesen Tag, zählt nur er (Tag-Leiste), sonst alle, die so anfangen (#lin findet #linux)
     function matchesSearch(bm) {
         if (!searchQuery) return true;
         const tokens = searchQuery.split(/\s+/).filter(Boolean);
@@ -4549,7 +4624,8 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
         const rest = tokens.filter(t => !(t.length > 1 && t[0] === '#')).join(' ');
         if (tagTokens.length) {
             const tags = (bm.tags || []).map(normalizeText);
-            if (!tagTokens.every(t => tags.some(x => x.startsWith(t)))) return false;
+            const known = knownTags();
+            if (!tagTokens.every(t => known.has(t) ? tags.includes(t) : tags.some(x => x.startsWith(t)))) return false;
         }
         return fuzzyMatch(bookmarkSearchText(bm), rest);
     }
@@ -4987,6 +5063,7 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
         $$('#viewMenu [data-sort]').forEach(b => b.classList.toggle('on', b.dataset.sort === sortMode));
         $$('#viewMenu [data-group]').forEach(b => b.classList.toggle('on', b.dataset.group === groupMode));
         $('#optFavTop').classList.toggle('on', favTop);
+        $('#optTagBar').classList.toggle('on', tagBarOn);
         document.body.classList.toggle('view-list', viewMode === 'list');
         document.body.classList.toggle('view-compact', viewMode === 'compact');
     }
@@ -5022,6 +5099,8 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
         const subs = activeTop ? cats.filter(c => c.toLowerCase().startsWith(activeTop.toLowerCase() + SEP)) : [];
         subCatBar.innerHTML = subs.map(c =>
             chip(c, escapeHtml(prettyCat(c.slice(activeTop.length + SEP.length))), countIn(c), currentCategory.toLowerCase() === c.toLowerCase())).join('');
+
+        renderTagBar();
 
         $('#categoryList').innerHTML = cats.map(c => `<option value="${escapeHtml(c)}">`).join('');
         fillCategoryPicker(cats);
@@ -5073,6 +5152,48 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
         syncHeaderSpacer();
         requestAnimationFrame(() => { window.scrollTo(0, scrollY); });
     }
+
+    /* ---------- Tag-Leiste: Antippen filtert nach dem Tag, noch mal antippen nimmt ihn wieder raus ---------- */
+    const isTagToken = x => x.length > 1 && x[0] === '#';
+    function activeTagKeys() {
+        return new Set(searchQuery.split(/\s+/).filter(isTagToken).map(x => normalizeText(x.slice(1))));
+    }
+    function renderTagBar() {
+        if (!tagBarOn) { tagBar.innerHTML = ''; return; }
+        // Gezählt wird im gewählten Ordner, ohne die Suche, damit die Zahlen zur Ansicht passen
+        const inView = b => {
+            if (b.deleted) return false;
+            if (currentCategory === 'favorites') return !!b.favorite;
+            if (currentCategory === 'dead') return !!b.check;
+            return currentCategory === 'all' || inCat(b.category, currentCategory);
+        };
+        const count = new Map();
+        bookmarks.forEach(b => { if (inView(b)) (b.tags || []).forEach(t => count.set(t, (count.get(t) || 0) + 1)); });
+        const active = activeTagKeys();
+        if (!count.size && !active.size) { tagBar.innerHTML = ''; return; }
+        const isOn = t => active.has(normalizeText(t));
+        const list = [...count.keys()].sort((a, b) => (isOn(b) - isOn(a)) || count.get(b) - count.get(a) || a.localeCompare(b, 'de')).slice(0, 300);
+        tagBar.innerHTML =
+            `<button type="button" class="cat-btn tagm" data-cat="__tagmanage" title="Tags verwalten" aria-label="Tags verwalten">${SVG.edit}<span>Tags</span></button>`
+            + (active.size ? '<button type="button" class="cat-btn" data-cat="__tagoff">✕ Tag-Filter aus</button>' : '')
+            + list.map(t => {
+                const on = isOn(t);
+                return `<button type="button" class="cat-btn tagb ${on ? 'active' : ''}" data-tagbtn="${escapeHtml(t)}" aria-pressed="${on ? 'true' : 'false'}">#${escapeHtml(t)} <span class="count">${count.get(t)}</span></button>`;
+            }).join('');
+    }
+    function toggleTagFilter(t) {
+        const key = normalizeText(t);
+        const toks = searchQuery.split(/\s+/).filter(Boolean);
+        const has = toks.some(x => isTagToken(x) && normalizeText(x.slice(1)) === key);
+        setSearch((has ? toks.filter(x => !(isTagToken(x) && normalizeText(x.slice(1)) === key)) : toks.concat('#' + t)).join(' '));
+    }
+    tagBar.addEventListener('click', e => {
+        const b = e.target.closest('button');
+        if (!b) return;
+        if (b.dataset.cat === '__tagmanage') { openTags(); return; }
+        if (b.dataset.cat === '__tagoff') { setSearch(searchQuery.split(/\s+/).filter(x => x && !isTagToken(x)).join(' ')); return; }
+        if (b.dataset.tagbtn !== undefined) toggleTagFilter(b.dataset.tagbtn);
+    });
 
     function pickCategory(cat) {
         if (currentCategory === cat && cat !== 'all') {
@@ -5321,6 +5442,7 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
         else if (b.dataset.sort) { sortMode = b.dataset.sort; store.set('lv_sort', sortMode); }
         else if (b.dataset.group) { groupMode = b.dataset.group; store.set('lv_group', groupMode); }
         else if (b.id === 'optFavTop') { favTop = !favTop; store.set('lv_favtop', favTop ? '1' : '0'); }
+        else if (b.id === 'optTagBar') { tagBarOn = !tagBarOn; store.set('lv_tagbar', tagBarOn ? '1' : '0'); }
         render();
     });
 
@@ -5586,17 +5708,15 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
 
     /* ---------- Automatisch sortieren ----------
        Ohne KI und ohne fremde Dienste, alles passiert hier im Browser:
-       1. eingebaute Gruppen: bekannte Domains und typische Stichwörter
+       1. Gruppen mit Domains und Stichwörtern (eine gemeinsame Liste, komplett bearbeitbar, Standard jederzeit zurückholbar)
        2. deine bisherige Sortierung: Links derselben Seite, deine Tags und Ordnernamen im Text
-       3. deine eigenen Regeln (gehen immer vor)
        Erst wird alles nur vorgeschlagen. Übernommen wird, was angehakt bleibt. Tags kommen nur dazu, nie weg. */
 
-    // d = Domains (Unterdomains zählen mit, „name.*“ = jede Endung wie amazon.de oder amazon.com),
+    // Die Standard-Gruppen. d = Domains („name.*“ = jede Endung, „.xxx“ = alle Domains mit dieser Endung),
     // w = ganze Wörter („a_b“ = zwei Wörter hintereinander, „wort*“ = Wortanfang), s = Wortteile, die irgendwo stehen dürfen.
-    // Reihenfolge zählt: Passt eine Domain zu mehreren Gruppen, gibt die erste den Ordner vor.
     const AS_CATS = [
         { id: 'nsfw', label: 'Erwachsene (NSFW)', t: 'nsfw', f: 'NSFW',
-          d: 'pornhub.com xvideos.com xhamster.com xnxx.com youporn.com redtube.com onlyfans.com chaturbate.com stripchat.com livejasmin.com brazzers.com spankbang.com eporner.com nhentai.net e-hentai.org fansly.com literotica.com motherless.com beeg.com tube8.com porn.com xxx porn sex sexy adult',
+          d: 'pornhub.com xvideos.com xhamster.com xnxx.com youporn.com redtube.com onlyfans.com chaturbate.com stripchat.com livejasmin.com brazzers.com spankbang.com eporner.com nhentai.net e-hentai.org fansly.com literotica.com motherless.com beeg.com tube8.com porn.com .xxx .porn .sex .sexy .adult',
           w: 'sex sexy erotik erotic erotisch nackt nude nudes nsfw milf fetisch fetish bdsm escort sexcam porno pornos hentai',
           s: 'porn xxx hentai xvideo xhamster onlyfans camgirl' },
         { id: 'technik', label: 'Technik & Computer', t: 'technik', f: 'Technik',
@@ -5640,7 +5760,7 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
         { id: 'wissen', label: 'Wissen & Lernen', t: 'wissen', f: 'Wissen',
           d: 'wikipedia.org wikibooks.org wiktionary.org wikiwand.com britannica.com duden.de dict.cc leo.org linguee.* dwds.de khanacademy.org coursera.org udemy.com edx.org ted.com studysmarter.de sofatutor.com serlo.org planet-wissen.de spektrum.de scinexx.de quarks.de arxiv.org researchgate.net scholar.google.com sciencedirect.com nature.com gutenberg.org projekt-gutenberg.org brilliant.org duolingo.com',
           w: 'wissen lernen learn learning kurs kurse course courses lexikon wiki studie studien wissenschaft science vokabeln grammatik' },
-        { id: 'anleitung', label: 'Anleitungen (nur Tag)', t: 'anleitung', f: '',
+        { id: 'anleitung', label: 'Anleitungen', t: 'anleitung', f: '',
           d: 'wikihow.com wikihow.* ifixit.com instructables.com',
           w: 'anleitung anleitungen tutorial tutorials howto how_to guide schritt_für_schritt diy' },
         { id: 'spiele', label: 'Spiele & Gaming', t: 'gaming', f: 'Spiele',
@@ -5658,7 +5778,7 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
         { id: 'auto', label: 'Auto & Verkehr', t: 'auto', f: 'Auto',
           d: 'mobile.de autoscout24.* adac.de auto-motor-und-sport.de autobild.de motor-talk.de carwow.de spritmonitor.de clever-tanken.de mehr-tanken.de tesla.com autozeitung.de motorradonline.de 1000ps.de',
           w: 'autos kfz pkw fahrzeug fahrzeuge motorrad gebrauchtwagen reifen tanken elektroauto e_auto werkstatt' },
-        { id: 'wetter', label: 'Wetter (nur Tag)', t: 'wetter', f: '',
+        { id: 'wetter', label: 'Wetter', t: 'wetter', f: '',
           d: 'wetter.com wetter.de wetteronline.de dwd.de kachelmannwetter.com windy.com accuweather.com weather.com meteoblue.com wetter.at',
           w: 'wetter weather unwetter regenradar wettervorhersage' },
         { id: 'buecher', label: 'Bücher', t: 'bücher', f: 'Bücher',
@@ -5668,17 +5788,6 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
           d: 'deepl.com translate.google.com docs.google.com drive.google.com dropbox.com onedrive.live.com icloud.com notion.so trello.com canva.com figma.com smallpdf.com ilovepdf.com wetransfer.com bitwarden.com 1password.com mail.google.com outlook.live.com outlook.com gmx.net gmx.de web.de proton.me tuta.com speedtest.net fast.com archive.ph tinyurl.com remove.bg photopea.com excalidraw.com draw.io app.diagrams.net calendar.google.com doodle.com virustotal.com haveibeenpwned.com cloudconvert.com online-convert.com tineye.com openstreetmap.org',
           w: 'tool tools rechner calculator converter konverter generator umrechner übersetzer translator' }
     ];
-    // Domain → Gruppen, einmal aufgebaut
-    const AS_DOMAINS = new Map();
-    AS_CATS.forEach((c, i) => {
-        c.words = (c.w || '').split(' ').filter(Boolean).map(w => w.replace(/_/g, ' '));
-        c.subs = (c.s || '').split(' ').filter(Boolean);
-        (c.d || '').split(' ').filter(Boolean).forEach(d => {
-            const list = AS_DOMAINS.get(d) || [];
-            if (!list.includes(i)) list.push(i);
-            AS_DOMAINS.set(d, list);
-        });
-    });
     // Große Plattformen mit ganz gemischtem Inhalt: Hier lernt die Sortierung nicht „wie die anderen Links dieser Seite“
     const AS_GENERIC = new Set(('youtube.com youtu.be google.com google.de github.com gitlab.com reddit.com medium.com substack.com amazon.de amazon.com '
         + 'twitter.com x.com facebook.com instagram.com pinterest.com pinterest.de tiktok.com t.me linkedin.com docs.google.com drive.google.com '
@@ -5693,13 +5802,37 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
         + 'diverses privat private test allgemein archiv archive import importiert imported favoriten favorites links link web www seite seiten '
         + 'home start main mehr more und and the der die das').split(' '));
 
-    let asRules = null;          // { rules: [...], cats: {...} } vom Server
-    let asRulesOk = false;       // false = konnte nicht geladen werden, dann darf das Regel-Fenster nichts überschreiben
+    let asGroups = null;         // die Gruppen, wie sie gerade gelten (vom Server oder Standard)
+    let asRulesOk = false;       // false = konnte nicht geladen werden, dann darf das Gruppen-Fenster nichts überschreiben
     let asSugs = [];             // Vorschläge der letzten Berechnung
     let asRun = 0;
     const autoOverlay = $('#autoOverlay');
     const rulesOverlay = $('#rulesOverlay');
     const asLower = s => String(s || '').toLocaleLowerCase('de');
+    const asWords = s => asLower(s).split(/[^a-z0-9äöüß]+/).filter(Boolean).join(' ');
+
+    // Standard als bearbeitbare Liste: jede Gruppe mit Name, Tags, Ordner und Einträgen
+    function asDefaultGroups() {
+        const tr = (window.lvUi && typeof window.lvUi.tr === 'function') ? window.lvUi.tr : (x => x);
+        return AS_CATS.map(c => ({
+            id: c.id, n: tr(c.label), on: true, t: c.t ? [c.t] : [], f: c.f || '',
+            e: [].concat(
+                (c.d || '').split(' ').filter(Boolean),
+                (c.w || '').split(' ').filter(Boolean).map(w => w.replace(/_/g, ' ')),
+                (c.s || '').split(' ').filter(Boolean).map(x => '*' + x + '*'))
+        }));
+    }
+    // Erste Fassung (eigene Regeln + geänderte eingebaute Gruppen) in die gemeinsame Liste übernehmen
+    function asFromLegacy(lg) {
+        const groups = asDefaultGroups();
+        const cats = (lg && lg.cats && typeof lg.cats === 'object') ? lg.cats : {};
+        groups.forEach(g => { const o = cats[g.id]; if (o) { g.on = !!o.on; g.t = o.t ? [o.t] : []; g.f = o.f || ''; } });
+        const own = ((lg && Array.isArray(lg.rules)) ? lg.rules : []).map(r => {
+            const x = asEntry(r.m);
+            return { id: '', n: r.m, on: true, t: r.t || [], f: r.f || '', e: [x && x.k === 'd' ? r.m : '*' + r.m + '*'] };
+        });
+        return own.concat(groups);
+    }
 
     // Text eines Links als Wortkette „ wort wort … “: Titel, Beschreibung, Domain (ohne Endung) und Pfad
     function asText(bm) {
@@ -5716,23 +5849,54 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
         if (labels.length > 1) labels.pop();
         const raw = asLower([bm.title || '', bm.description || '', labels.join(' '), path].join(' '));
         const words = raw.split(/[^a-z0-9äöüß]+/).filter(Boolean);
-        return { host, set: new Set(words), words: ' ' + words.join(' ') + ' ', raw: asLower(host + ' ' + path + ' ' + (bm.title || '')),
-                 full: asLower((bm.url || '') + ' ' + (bm.title || '') + ' ' + (bm.description || '')) };
+        return { host, set: new Set(words), words: ' ' + words.join(' ') + ' ', full: asLower((bm.url || '') + ' ' + (bm.title || '') + ' ' + (bm.description || '')) };
     }
-    // Ganzes Wort (oder mehrere Wörter) im Text? „wort*“ = Wortanfang. Mit ends = auch mit Endung (Rezept → Rezepte)
+    // Was ein Eintrag bedeutet: „youtube.com“ Domain samt Unterdomains, „amazon.*“ jede Endung, „.xxx“ alle mit dieser Endung,
+    // „*teil*“ steht irgendwo, „wort*“ Wortanfang, sonst ein ganzes Wort (oder mehrere hintereinander)
+    const AS_DOMAIN_RX = /^\.?[a-z0-9äöüß-]+(\.[a-z0-9äöüß-]+)*(\.\*)?$/;
+    function asEntry(raw) {
+        const e = asLower(raw).trim();
+        if (!e) return null;
+        if (e.startsWith('*')) { const x = e.replace(/^\*+|\*+$/g, ''); return x ? { k: 's', v: x } : null; }
+        if (e.includes('.') && AS_DOMAIN_RX.test(e)) return { k: 'd', v: e.replace(/^\./, '').replace(/^www\./, '') };
+        if (e.endsWith('*')) { const x = asWords(e.slice(0, -1)); return x ? { k: 'p', v: x } : null; }
+        const x = asWords(e);
+        return x ? { k: 'w', v: x } : null;
+    }
+    // Ganzes Wort (oder mehrere Wörter) im Text? Mit ends = auch mit Endung (Rezept → Rezepte)
     const AS_ENDS = ['s', 'e', 'en', 'n', 'er'];
     function asHasWord(tx, w, ends) {
-        if (w.endsWith('*')) return tx.words.includes(' ' + w.slice(0, -1));
         if (w.includes(' ')) return tx.words.includes(' ' + w + ' ');
         if (tx.set.has(w)) return true;
         return !!ends && w.length >= 4 && AS_ENDS.some(x => tx.set.has(w + x));
     }
-    // Eingebaute Gruppen zu einer Domain: erst genau (auch Unterdomains), dann „name.*“ für jede Endung
-    function asDomainCats(host) {
+    // Gruppen einmal aufbereiten: Domains in eine Tabelle, Wörter und Wortteile je Gruppe
+    function asCompileGroups(groups) {
+        const dmap = new Map();
+        const comp = (groups || []).map((g, i) => {
+            const c = { i, n: g.n || '', on: !!g.on, t: g.t || [], f: g.f || '', words: [], pre: [], subs: [] };
+            (g.e || []).forEach(raw => {
+                const x = asEntry(raw);
+                if (!x) return;
+                if (x.k === 'd') {
+                    if (!c.on) return;
+                    const l = dmap.get(x.v) || [];
+                    if (!l.includes(i)) l.push(i);
+                    dmap.set(x.v, l);
+                } else if (x.k === 's') c.subs.push(x.v);
+                else if (x.k === 'p') c.pre.push(x.v);
+                else c.words.push(x.v);
+            });
+            return c;
+        });
+        return { comp, dmap };
+    }
+    // Gruppen zu einer Domain: die genaueste Angabe gewinnt (music.youtube.com vor youtube.com), dann „name.*“
+    function asDomainGroups(host, dmap) {
         if (!host) return null;
         let h = host;
         while (h) {
-            if (AS_DOMAINS.has(h)) return { key: h, cats: AS_DOMAINS.get(h) };
+            if (dmap.has(h)) return dmap.get(h);
             const i = h.indexOf('.');
             if (i < 0) break;
             h = h.slice(i + 1);
@@ -5741,17 +5905,9 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
         labels.pop();
         if (labels.length >= 2 && /^(co|com|org|net|ac|gv|or|ne)$/.test(labels[labels.length - 1])) labels.pop();
         const core = labels[labels.length - 1];
-        if (core && AS_DOMAINS.has(core + '.*')) return { key: host, cats: AS_DOMAINS.get(core + '.*') };
-        return null;
-    }
-    // Gruppe mit deinen Änderungen (umbenannt, abgeschaltet)
-    function asCat(c) {
-        const o = (asRules && asRules.cats && asRules.cats[c.id]) || null;
-        if (!o) return { on: true, t: c.t, f: c.f };
-        return { on: !!o.on, t: o.t || '', f: o.f || '' };
+        return (core && dmap.get(core + '.*')) || null;
     }
     const asIsUnsorted = cat => AS_UNSORTED.has(asLower(cat));
-    const asIsDomainRule = m => /^[a-z0-9äöü-]+(\.[a-z0-9äöü-]+)+$/.test(m);
 
     function asCompute() {
         const optTags = $('#autoOptTags').checked;
@@ -5761,6 +5917,7 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
         // Ist ein Ordner oder eine Suche aktiv, geht es nur um das, was gerade zu sehen ist
         const scoped = currentCategory !== 'all' || !!searchQuery;
         const list = scoped ? bookmarks.filter(matchesFilter) : all;
+        const G = asCompileGroups(asGroups);
 
         // Vorhandene Schreibweisen übernehmen: Tag „Video“ statt „video“, Ordner „Medien > Videos“ statt „Videos“
         const tagSpelling = new Map();
@@ -5791,18 +5948,21 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
             if (!asIsUnsorted(b.category)) { st.sorted++; st.folders[b.category] = (st.folders[b.category] || 0) + 1; }
         });
         // Eigene Tags und Ordnernamen, nach denen im Text gesucht wird
-        const ownTags = [];
+        // Einzelne Wörter kommen in eine Tabelle (schnell auch bei Hunderten Tags), mehrere Wörter werden einzeln geprüft
+        const ownTagWord = new Map();
+        const ownTagPhrases = [];
         tagSpelling.forEach((t, k) => {
-            const phrase = k.split(/[^a-z0-9äöüß]+/).filter(Boolean).join(' ');
-            if (phrase.length >= 3 && !/^\d+$/.test(phrase) && !AS_STOP.has(phrase)) ownTags.push({ t, phrase });
+            const phrase = asWords(k);
+            if (phrase.length < 3 || /^\d+$/.test(phrase) || AS_STOP.has(phrase)) return;
+            if (phrase.includes(' ')) ownTagPhrases.push({ t, phrase });
+            else if (!ownTagWord.has(phrase)) ownTagWord.set(phrase, t);
         });
         const ownFolders = [];
         folders.forEach(f => {
             if (asIsUnsorted(f)) return;
-            const phrase = asLower(f.split(SEP).pop()).split(/[^a-z0-9äöüß]+/).filter(Boolean).join(' ');
+            const phrase = asWords(f.split(SEP).pop());
             if (phrase.length >= 3 && !/^\d+$/.test(phrase) && !AS_STOP.has(phrase)) ownFolders.push({ f, phrase });
         });
-        const rules = (asRules && asRules.rules) || [];
 
         const out = [];
         list.forEach(b => {
@@ -5811,26 +5971,33 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
             const tags = [];       // { t, why }
             const seen = new Set();
             const addTag = (t, why) => {
-                if (!t) return;
+                if (!t) return false;
                 const k = asLower(t);
-                if (have.has(k) || seen.has(k)) return;
+                if (have.has(k) || seen.has(k)) return false;
                 seen.add(k);
                 tags.push({ t: resolveTag(t), why });
+                return true;
             };
             let folder = null;     // { f, why }
             const setFolder = (f, why) => { if (!folder && f) folder = { f, why }; };
 
-            // 1. eigene Regeln
-            rules.forEach(r => {
-                const m = r.m;
-                const hit = asIsDomainRule(m)
-                    ? (tx.host === m.replace(/^www\./, '') || tx.host.endsWith('.' + m.replace(/^www\./, '')))
-                    : tx.full.includes(m);
-                if (!hit) return;
-                const why = `Regel „${m}“`;
-                (r.t || []).forEach(t => addTag(t, why));
-                if (r.f) setFolder(resolveFolder(r.f), why);
+            // Welche Gruppen passen? Erst über die Domain, dann über Stichwörter, jeweils in der Reihenfolge der Liste
+            const hits = [];       // { c, dom, why }
+            const domList = asDomainGroups(tx.host, G.dmap) || [];
+            domList.forEach(i => { const c = G.comp[i]; if (c && c.on) hits.push({ c, dom: true, why: `Domain ${tx.host} (${c.n})` }); });
+            G.comp.forEach(c => {
+                if (!c.on || domList.includes(c.i)) return;
+                let first = '';
+                for (const w of c.words) { if (asHasWord(tx, w, false)) { first = w; break; } }
+                if (!first) for (const p of c.pre) { if (tx.words.includes(' ' + p)) { first = p + '*'; break; } }
+                if (!first) for (const s of c.subs) { if (tx.full.includes(s)) { first = s; break; } }
+                if (first) hits.push({ c, dom: false, why: `Stichwort „${first}“ (${c.n})` });
             });
+            let groupTags = 0;
+            const takeTags = h => h.c.t.forEach(t => { if (groupTags < 6 && addTag(t, h.why)) groupTags++; });
+
+            // 1. Gruppen, die über die Domain passen
+            hits.filter(h => h.dom).forEach(h => { takeTags(h); if (h.c.f) setFolder(resolveFolder(h.c.f), h.why); });
 
             // 2. wie die anderen Links dieser Seite
             const st = tx.host ? byHost.get(tx.host) : null;
@@ -5842,8 +6009,17 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
                 if (best && bestN >= 2 && bestN / st.sorted >= 0.6) setFolder(best, why);
             }
 
-            // 3. deine Tags und Ordnernamen tauchen im Text auf
-            ownTags.forEach(o => { if (asHasWord(tx, o.phrase, true)) addTag(o.t, 'dein Tag steht im Titel oder in der Adresse'); });
+            // 3. deine Tags und Ordnernamen tauchen im Text auf (deine Ordner gehen vor allgemeinen Stichwörtern)
+            const ownWhy = 'dein Tag steht im Titel oder in der Adresse';
+            tx.set.forEach(w => {
+                let t = ownTagWord.get(w);
+                // Wort mit Endung (Rezepte → Tag „rezept“), wie bei asHasWord
+                if (t === undefined) for (const x of AS_ENDS) {
+                    if (w.length - x.length >= 4 && w.endsWith(x) && ownTagWord.has(w.slice(0, -x.length))) { t = ownTagWord.get(w.slice(0, -x.length)); break; }
+                }
+                if (t !== undefined) addTag(t, ownWhy);
+            });
+            ownTagPhrases.forEach(o => { if (asHasWord(tx, o.phrase, true)) addTag(o.t, ownWhy); });
             if (!folder) {
                 let best = null;
                 ownFolders.forEach(o => {
@@ -5854,25 +6030,8 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
                 if (best) setFolder(best.f, 'Ordnername steht im Titel oder in der Adresse');
             }
 
-            // 4. eingebaute Gruppen: erst die Domain, dann Stichwörter
-            const dom = asDomainCats(tx.host);
-            const hits = [];       // { i, why, score }
-            if (dom) dom.cats.forEach(i => hits.push({ i, why: `Domain ${tx.host}`, score: 100 }));
-            AS_CATS.forEach((c, i) => {
-                if (hits.some(h => h.i === i)) return;
-                let score = 0, first = '';
-                c.words.forEach(w => { if (asHasWord(tx, w, false)) { score++; if (!first) first = w.replace(/\*$/, ''); } });
-                c.subs.forEach(s => { if (tx.raw.includes(s)) { score++; if (!first) first = s; } });
-                if (score) hits.push({ i, why: `Stichwort „${first}“`, score });
-            });
-            hits.sort((a, b) => b.score - a.score || a.i - b.i);
-            let builtinTags = 0;
-            hits.forEach(h => {
-                const c = asCat(AS_CATS[h.i]);
-                if (!c.on) return;
-                if (c.t && builtinTags < 3) { const before = tags.length; addTag(c.t, h.why); if (tags.length > before) builtinTags++; }
-                if (c.f) setFolder(resolveFolder(c.f), h.why);
-            });
+            // 4. Gruppen, die über Stichwörter passen
+            hits.filter(h => !h.dom).forEach(h => { takeTags(h); if (h.c.f) setFolder(resolveFolder(h.c.f), h.why); });
 
             // Was davon wird überhaupt vorgeschlagen?
             const sug = { id: b.id, title: b.title || b.url, url: b.url, host: tx.host, cat: b.category || 'Allgemein', tags: [], folder: null };
@@ -5955,17 +6114,19 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
     function asRecompute() {
         asRenderList(asCompute());
     }
-    // Lädt die Regeln immer frisch (es könnte sie gerade jemand auf einem anderen Gerät geändert haben)
+    // Lädt die Gruppen immer frisch (es könnte sie gerade jemand auf einem anderen Gerät geändert haben)
     async function asLoadRules() {
         const res = await api('autosort_rules');
         if (!res.success) {
-            showToast(res.message || 'Eigene Regeln konnten nicht geladen werden', 'error');
-            if (!asRulesOk) asRules = { rules: [], cats: {} }; // Vorschläge gehen trotzdem, nur ohne deine Regeln
+            showToast(res.message || 'Gruppen konnten nicht geladen werden', 'error');
+            if (!asRulesOk) asGroups = asDefaultGroups(); // Vorschläge gehen trotzdem, mit dem Standard
             return false;
         }
-        asRules = { rules: Array.isArray(res.rules) ? res.rules : [], cats: (res.cats && typeof res.cats === 'object' && !Array.isArray(res.cats)) ? res.cats : {} };
+        if (Array.isArray(res.groups)) asGroups = res.groups;
+        else if (res.legacy) asGroups = asFromLegacy(res.legacy);
+        else asGroups = asDefaultGroups();
         asRulesOk = true;
-        if (res.broken) showToast('Die Datei mit deinen Regeln ist nicht lesbar. Beim nächsten Speichern wird sie neu angelegt.', 'error');
+        if (res.broken) showToast('Die Datei mit deinen Gruppen ist nicht lesbar, es gilt der Standard. Beim nächsten Speichern wird sie neu angelegt.', 'error');
         return true;
     }
     async function openAuto() {
@@ -5989,7 +6150,7 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
     $('#autoCancel').addEventListener('click', closeAuto);
     autoOverlay.addEventListener('click', e => { if (e.target === autoOverlay) closeAuto(); });
     ['#autoOptTags', '#autoOptFolders', '#autoOptMove'].forEach(s => $(s).addEventListener('change', () => {
-        if (asRules) asRecompute();
+        if (asGroups) asRecompute();
     }));
     $('#autoList').addEventListener('click', e => {
         const chip = e.target.closest('[data-k]');
@@ -6053,111 +6214,262 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
         closeAuto();
         render();
         const backup = res.backup;
-        showToast(res.message || 'Sortiert', 'success', backup ? {
-            label: 'Rückgängig',
-            fn: async () => applyRes(await api('backup_restore', { name: backup }), 'Zurückgeholt')
-        } : null);
+        showToast(res.message || 'Sortiert', 'success', backup ? { label: 'Rückgängig', fn: undoBackup(backup) } : null);
     });
 
-    /* ----- Eigene Regeln und eingebaute Gruppen bearbeiten ----- */
-    let rulesDraft = [];
-    function renderRules() {
-        const box = $('#rulesList');
-        if (!rulesDraft.length) { box.innerHTML = '<p class="text-sm text-slate-500">Noch keine eigenen Regeln.</p>'; return; }
-        box.innerHTML = rulesDraft.map((r, i) => `
-            <div class="list-row">
-                <div class="grow">
-                    <div class="t1">„${escapeHtml(r.m)}“</div>
-                    <div class="t2 as-keep">${r.t.length ? escapeHtml(r.t.map(t => '#' + t).join(' ')) : ''}${r.t.length && r.f ? ' · ' : ''}${r.f ? '→ ' + escapeHtml(prettyCat(r.f)) : ''}</div>
+    /* ----- Gruppen bearbeiten: eine gemeinsame Liste, alles änderbar, löschbar und jederzeit auf Standard zurückzuholen ----- */
+    let grpDraft = [];           // Arbeitskopie, gespeichert wird erst mit „Speichern“
+    const grpList = $('#grpList');
+    const grpSplitTags = s => String(s || '').split(/[,;\n]+/).map(x => x.trim().replace(/^#+/, '').replace(/\s+/g, '-')).filter(Boolean).slice(0, 5);
+    const grpSplitEntries = s => {
+        const seen = new Set();
+        return String(s || '').split(/[,\n]+/).map(x => asLower(x).trim().replace(/\s+/g, ' ')).filter(x => x && !seen.has(x) && seen.add(x)).slice(0, 500);
+    };
+    const grpFolder = s => {
+        const f = String(s || '').split('>').map(x => x.trim()).filter(Boolean).slice(0, 4).join(SEP);
+        return asLower(f) === 'allgemein' ? '' : f;
+    };
+    function grpSummary(g) {
+        const parts = [];
+        if (g.t.length) parts.push(g.t.map(t => '#' + t).join(' '));
+        if (g.f) parts.push('→ ' + prettyCat(g.f));
+        return parts.length ? parts.join(' · ') + ' ·' : '';
+    }
+    const grpCount = g => g.e.length === 1 ? '1 Eintrag' : `${g.e.length} Einträge`;
+    function grpMatches(g, q) {
+        if (!q) return true;
+        return [g.n, g.f].concat(g.t, g.e).some(x => asLower(x).includes(q));
+    }
+    function renderGroups() {
+        const q = asLower($('#grpFilter').value.trim());
+        if (!grpDraft.length) {
+            grpList.innerHTML = '<p class="text-sm text-slate-500">Keine Gruppen. Leg eine neue an oder hol den Standard zurück.</p>';
+            return;
+        }
+        grpList.innerHTML = grpDraft.map((g, i) => `
+            <div class="as-grp${g.on ? '' : ' as-dim'}${grpMatches(g, q) ? '' : ' hidden'}" data-g="${i}">
+                <div class="list-row">
+                    <input type="checkbox" class="as-on" ${g.on ? 'checked' : ''} title="Gruppe benutzen" aria-label="Gruppe benutzen">
+                    <button type="button" class="grow as-grp-head" data-gact="edit" aria-expanded="${g._open ? 'true' : 'false'}">
+                        <span class="t1 block as-keep as-gname">${escapeHtml(g.n)}</span>
+                        <span class="t2 block"><span class="as-keep as-gsum">${escapeHtml(grpSummary(g))}</span> <span class="as-gcount">${grpCount(g)}</span></span>
+                    </button>
+                    <button type="button" class="card-btn card-btn-icon" data-gact="edit" title="Bearbeiten" aria-label="Bearbeiten">${SVG.edit}</button>
+                    <button type="button" class="card-btn card-btn-icon danger" data-gact="del" title="Gruppe löschen" aria-label="Gruppe löschen">${SVG.trash}</button>
                 </div>
-                <button type="button" class="btn btn-ghost" data-delrule="${i}" title="Regel löschen" aria-label="Regel löschen">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
-                </button>
+                <div class="as-grp-edit box${g._open ? '' : ' hidden'}">
+                    <label class="lbl">Name</label>
+                    <input type="text" class="field mb-2 as-gn" maxlength="60" value="${escapeHtml(g.n)}" autocomplete="off">
+                    <div class="as-two">
+                        <div><label class="lbl">Tags (mit Komma)</label>
+                            <input type="text" class="field as-gt" maxlength="200" value="${escapeHtml(g.t.join(', '))}" placeholder="z. B. video, musik" autocomplete="off"></div>
+                        <div><label class="lbl">Ordner</label>
+                            <input type="text" class="field as-gf" maxlength="250" value="${escapeHtml(g.f)}" placeholder="leer = keiner" autocomplete="off" list="ruleFolderList"></div>
+                    </div>
+                    <label class="lbl mt-2">Domains und Stichwörter (mit Komma oder je Zeile)</label>
+                    <textarea class="field as-ge" rows="5" spellcheck="false">${escapeHtml(g.e.join(', '))}</textarea>
+                    <div class="flex flex-wrap gap-2 mt-2">
+                        <button type="button" class="btn btn-secondary lv-mini" data-gact="up" ${i === 0 ? 'disabled' : ''}>Nach oben</button>
+                        <button type="button" class="btn btn-secondary lv-mini" data-gact="down" ${i === grpDraft.length - 1 ? 'disabled' : ''}>Nach unten</button>
+                        <button type="button" class="btn btn-primary lv-mini ml-auto" data-gact="edit">Fertig</button>
+                    </div>
+                </div>
             </div>`).join('');
     }
-    function renderCatsEditor() {
-        $('#catsList').innerHTML = AS_CATS.map(c => {
-            const e = asCat(c);
-            return `<label class="as-cat${e.on ? '' : ' as-dim'}" data-cat="${c.id}">
-                <input type="checkbox" class="as-on" ${e.on ? 'checked' : ''}>
-                <span class="as-cat-name">${escapeHtml(c.label)}</span>
-                <input type="text" class="field as-ct" maxlength="40" value="${escapeHtml(e.t)}" placeholder="Tag" aria-label="Tag" autocomplete="off">
-                <input type="text" class="field as-cf" maxlength="250" value="${escapeHtml(e.f)}" placeholder="Ordner" aria-label="Ordner" autocomplete="off" list="ruleFolderList">
-            </label>`;
-        }).join('');
-    }
-    // Neue Regel aus den drei Feldern. Ergebnis: true = übernommen oder nichts eingegeben, false = unvollständig
-    function addRuleFromFields() {
-        const m = $('#ruleM').value.trim().toLocaleLowerCase('de');
-        const t = $('#ruleT').value.split(/[,;\n]+/).map(x => x.trim().replace(/^#/, '').replace(/\s+/g, '-')).filter(Boolean).slice(0, 5);
-        const f = $('#ruleF').value.split('>').map(x => x.trim()).filter(Boolean).join(SEP);
-        if (!m && !t.length && !f) return true;
-        if (!m) { showToast('Stichwort oder Domain eingeben', 'error'); $('#ruleM').focus(); return false; }
-        if (!t.length && !f) { showToast('Mindestens einen Tag oder einen Ordner angeben', 'error'); $('#ruleT').focus(); return false; }
-        if (rulesDraft.length >= 300) { showToast('Höchstens 300 Regeln', 'error'); return false; }
-        rulesDraft.push({ m, t, f: asLower(f) === 'allgemein' ? '' : f });
-        $('#ruleM').value = ''; $('#ruleT').value = ''; $('#ruleF').value = '';
-        renderRules();
-        return true;
+    function grpRowOf(el) {
+        const row = el && el.closest('[data-g]');
+        return row ? { row, i: +row.dataset.g, g: grpDraft[+row.dataset.g] } : null;
     }
     async function openRules() {
-        // Ohne sicher geladene Regeln kein Bearbeiten, sonst würde Speichern sie mit einer leeren Liste überschreiben
+        // Ohne sicher geladene Gruppen kein Bearbeiten, sonst würde Speichern sie mit dem Standard überschreiben
         if (!await asLoadRules()) return;
-        rulesDraft = (asRules.rules || []).map(r => ({ m: r.m, t: (r.t || []).slice(), f: r.f || '' }));
-        $('#ruleM').value = ''; $('#ruleT').value = ''; $('#ruleF').value = '';
+        grpDraft = (asGroups || []).map(g => ({ id: g.id || '', n: g.n || '', on: !!g.on, t: (g.t || []).slice(), f: g.f || '', e: (g.e || []).slice(), _open: false }));
+        $('#grpFilter').value = '';
         $('#ruleFolderList').innerHTML = getCategories().map(c => `<option value="${escapeHtml(c)}"></option>`).join('');
-        renderRules();
-        renderCatsEditor();
+        renderGroups();
         showOverlay(rulesOverlay);
-        setTimeout(() => $('#ruleM').focus(), 100);
     }
     function closeRules() { hideOverlay(rulesOverlay); }
     $('#autoRulesBtn').addEventListener('click', openRules);
     $('#rulesClose').addEventListener('click', closeRules);
     $('#rulesCancel').addEventListener('click', closeRules);
     rulesOverlay.addEventListener('click', e => { if (e.target === rulesOverlay) closeRules(); });
-    $('#ruleAdd').addEventListener('click', () => { if (addRuleFromFields()) $('#ruleM').focus(); });
-    ['#ruleM', '#ruleT', '#ruleF'].forEach(s => $(s).addEventListener('keydown', e => {
-        if (e.key === 'Enter') { e.preventDefault(); if (addRuleFromFields()) $('#ruleM').focus(); }
-    }));
-    $('#rulesList').addEventListener('click', e => {
-        const b = e.target.closest('[data-delrule]');
-        if (!b) return;
-        rulesDraft.splice(+b.dataset.delrule, 1);
-        renderRules();
+    $('#grpFilter').addEventListener('input', () => {
+        const q = asLower($('#grpFilter').value.trim());
+        grpList.querySelectorAll('[data-g]').forEach(row => row.classList.toggle('hidden', !grpMatches(grpDraft[+row.dataset.g], q)));
     });
-    $('#catsList').addEventListener('change', e => {
+    $('#grpNew').addEventListener('click', () => {
+        if (grpDraft.length >= 150) { showToast('Höchstens 150 Gruppen', 'error'); return; }
+        grpDraft.forEach(g => { g._open = false; });
+        grpDraft.unshift({ id: '', n: 'Neue Gruppe', on: true, t: [], f: '', e: [], _open: true });
+        $('#grpFilter').value = '';
+        renderGroups();
+        const name = grpList.querySelector('[data-g="0"] .as-gn');
+        if (name) { name.focus(); name.select(); }
+    });
+    $('#grpReset').addEventListener('click', async () => {
+        if (!await confirmDialog({
+            title: 'Standard wiederherstellen?',
+            text: 'Alle eingebauten Gruppen kommen in der Originalfassung zurück, auch gelöschte. Deine eigenen Gruppen bleiben. Übernommen wird es erst mit „Speichern“.',
+            ok: 'Wiederherstellen' })) return;
+        const own = grpDraft.filter(g => !g.id);
+        grpDraft = own.concat(asDefaultGroups().map(g => Object.assign(g, { _open: false })));
+        $('#grpFilter').value = '';
+        renderGroups();
+        showToast('Standard ist wieder da. Zum Übernehmen „Speichern“ antippen.');
+    });
+    grpList.addEventListener('click', e => {
+        const btn = e.target.closest('[data-gact]');
+        const r = grpRowOf(btn);
+        if (!btn || !r || btn.disabled) return;
+        const act = btn.dataset.gact;
+        if (act === 'edit') {
+            r.g._open = !r.g._open;
+            r.row.querySelector('.as-grp-edit').classList.toggle('hidden', !r.g._open);
+            r.row.querySelector('.as-grp-head').setAttribute('aria-expanded', r.g._open ? 'true' : 'false');
+            if (r.g._open) { const n = r.row.querySelector('.as-gn'); if (n) n.focus(); }
+            return;
+        }
+        if (act === 'del') {
+            const [gone] = grpDraft.splice(r.i, 1);
+            renderGroups();
+            showToast(`Gruppe „${gone.n}“ gelöscht`, 'success', { label: 'Rückgängig', fn: () => {
+                grpDraft.splice(Math.min(r.i, grpDraft.length), 0, gone);
+                renderGroups();
+            } });
+            return;
+        }
+        if (act === 'up' || act === 'down') {
+            const j = act === 'up' ? r.i - 1 : r.i + 1;
+            if (j < 0 || j >= grpDraft.length) return;
+            [grpDraft[r.i], grpDraft[j]] = [grpDraft[j], grpDraft[r.i]];
+            renderGroups();
+            const moved = grpList.querySelector(`[data-g="${j}"] [data-gact="${act}"]`);
+            if (moved && !moved.disabled) moved.focus();
+            const row = grpList.querySelector(`[data-g="${j}"]`);
+            if (row) row.scrollIntoView({ block: 'nearest' });
+        }
+    });
+    // Eingaben landen sofort in der Arbeitskopie, die Zusammenfassung oben läuft mit
+    grpList.addEventListener('input', e => {
+        const r = grpRowOf(e.target);
+        if (!r) return;
+        const el = e.target;
+        if (el.classList.contains('as-gn')) { r.g.n = el.value.trim(); r.row.querySelector('.as-gname').textContent = r.g.n || 'Gruppe'; }
+        else if (el.classList.contains('as-gt')) r.g.t = grpSplitTags(el.value);
+        else if (el.classList.contains('as-gf')) r.g.f = grpFolder(el.value);
+        else if (el.classList.contains('as-ge')) r.g.e = grpSplitEntries(el.value);
+        else return;
+        r.row.querySelector('.as-gsum').textContent = grpSummary(r.g);
+        r.row.querySelector('.as-gcount').textContent = grpCount(r.g);
+    });
+    grpList.addEventListener('change', e => {
         const cb = e.target.closest('.as-on');
-        if (cb) cb.closest('.as-cat').classList.toggle('as-dim', !cb.checked);
+        const r = grpRowOf(cb);
+        if (!r) return;
+        r.g.on = cb.checked;
+        r.row.classList.toggle('as-dim', !cb.checked);
     });
     $('#rulesSave').addEventListener('click', async () => {
-        // Steht noch etwas in den Feldern, ist das bestimmt als Regel gemeint
-        if (!addRuleFromFields()) return;
-        const cats = {};
-        $('#catsList').querySelectorAll('.as-cat').forEach(row => {
-            const c = AS_CATS.find(x => x.id === row.dataset.cat);
-            if (!c) return;
-            const on = row.querySelector('.as-on').checked;
-            const t = row.querySelector('.as-ct').value.trim().replace(/^#/, '').replace(/\s+/g, '-');
-            const f = row.querySelector('.as-cf').value.split('>').map(x => x.trim()).filter(Boolean).join(SEP);
-            // Nur speichern, was vom Standard abweicht
-            if (on && t === c.t && f === c.f) return;
-            cats[c.id] = { on, t, f };
-        });
+        const groups = grpDraft.map(g => ({ id: g.id, n: g.n.trim() || 'Gruppe', on: g.on, t: g.t, f: g.f, e: g.e }));
         const btn = $('#rulesSave');
         btn.disabled = true;
-        const res = await api('autosort_rules_save', { rules: rulesDraft, cats });
+        const res = await api('autosort_rules_save', { groups });
         btn.disabled = false;
         if (!res.success) { showToast(res.message || 'Fehler', 'error'); return; }
-        asRules = { rules: Array.isArray(res.rules) ? res.rules : [], cats: (res.cats && typeof res.cats === 'object' && !Array.isArray(res.cats)) ? res.cats : {} };
+        asGroups = Array.isArray(res.groups) ? res.groups : groups;
         asRulesOk = true;
         closeRules();
         showToast(res.message || 'Gespeichert');
         if (!autoOverlay.classList.contains('hidden')) asRecompute();
     });
 
+    /* ---------- Tags verwalten: umbenennen, zusammenlegen, löschen. Die Links bleiben immer. ---------- */
+    const tagsOverlay = $('#tagsOverlay');
+    let tagsShown = [];
+    function renderTags() {
+        const count = new Map();
+        live().forEach(b => (b.tags || []).forEach(t => count.set(t, (count.get(t) || 0) + 1)));
+        tagsShown = [...count.keys()].sort((a, b) => a.localeCompare(b, 'de', { sensitivity: 'base', numeric: true }));
+        const list = $('#tagsList');
+        if (!tagsShown.length) { list.innerHTML = '<p class="text-sm text-slate-500">Noch keine Tags.</p>'; return; }
+        const q = normalizeText($('#tagsFilter').value);
+        list.innerHTML = tagsShown.map((t, i) => `
+            <div class="flex items-center gap-1.5${q && !normalizeText(t).includes(q) ? ' hidden' : ''}" data-ti="${i}">
+                <input type="text" class="field flex-1 min-w-0 !py-2 !text-sm" value="${escapeHtml(t)}" aria-label="Tag-Name" maxlength="40">
+                <span class="text-[11px] text-slate-500 bg-slate-800/80 px-1.5 py-0.5 rounded shrink-0" title="Links mit diesem Tag">${count.get(t)}</span>
+                <button type="button" class="btn btn-secondary lv-mini shrink-0" data-tact="rename">Speichern</button>
+                <button type="button" class="btn btn-danger lv-mini shrink-0" data-tact="delete">Löschen</button>
+            </div>`).join('');
+    }
+    function openTags() {
+        $('#tagsFilter').value = '';
+        renderTags();
+        showOverlay(tagsOverlay);
+    }
+    function closeTags() { hideOverlay(tagsOverlay); }
+    const afterTagUndo = () => { if (!tagsOverlay.classList.contains('hidden')) renderTags(); };
+    async function renameTag(row) {
+        const old = tagsShown[+row.dataset.ti];
+        const input = row.querySelector('input');
+        const neu = input.value.trim().replace(/^#+/, '').replace(/\s+/g, '-');
+        if (old === undefined) return;
+        if (!neu) { input.value = old; return; }
+        if (neu === old) return;
+        const other = tagsShown.find(t => t !== old && t.toLocaleLowerCase('de') === neu.toLocaleLowerCase('de'));
+        if (other && !await confirmDialog({ title: 'Tags zusammenlegen?', text: `„#${other}“ gibt es schon. Alle Links mit „#${old}“ bekommen stattdessen „#${neu}“.`, ok: 'Zusammenlegen' })) return;
+        const res = await api('tag_rename', { tag: old, new: neu });
+        if (!res.success) { showToast(res.message || 'Fehler', 'error'); return; }
+        bookmarks = res.bookmarks;
+        // Filtert die Suche gerade nach dem alten Namen, gleich mitziehen
+        const key = normalizeText(old);
+        if (searchQuery.split(/\s+/).some(x => isTagToken(x) && normalizeText(x.slice(1)) === key)) {
+            searchInput.value = searchQuery = searchQuery.split(/\s+/).map(x => isTagToken(x) && normalizeText(x.slice(1)) === key ? '#' + neu : x).join(' ');
+            syncSearchClear();
+        }
+        render(); renderTags();
+        showToast(res.message || 'Umbenannt', 'success', res.backup ? { label: 'Rückgängig', fn: undoBackup(res.backup, afterTagUndo) } : null);
+    }
+    $('#tagsList').addEventListener('click', async e => {
+        const btn = e.target.closest('[data-tact]');
+        const row = btn && btn.closest('[data-ti]');
+        if (!row) return;
+        if (btn.dataset.tact === 'rename') { renameTag(row); return; }
+        const t = tagsShown[+row.dataset.ti];
+        if (t === undefined) return;
+        const n = live().filter(b => (b.tags || []).includes(t)).length;
+        if (!await confirmDialog({ title: `Tag „#${t}“ löschen?`, text: `Er verschwindet von ${n} Link(s). Die Links selbst bleiben.`, ok: 'Tag löschen', danger: true })) return;
+        const res = await api('tag_delete', { tag: t });
+        if (!res.success) { showToast(res.message || 'Fehler', 'error'); return; }
+        bookmarks = res.bookmarks;
+        // Ein Filter auf den gelöschten Tag ergibt keinen Sinn mehr
+        const key = normalizeText(t);
+        if (searchQuery.split(/\s+/).some(x => isTagToken(x) && normalizeText(x.slice(1)) === key)) {
+            searchInput.value = searchQuery = searchQuery.split(/\s+/).filter(x => !(isTagToken(x) && normalizeText(x.slice(1)) === key)).join(' ');
+            syncSearchClear();
+        }
+        render(); renderTags();
+        showToast(res.message || 'Gelöscht', 'success', res.backup ? { label: 'Rückgängig', fn: undoBackup(res.backup, afterTagUndo) } : null);
+    });
+    $('#tagsList').addEventListener('keydown', e => {
+        if (e.key === 'Enter' && e.target.tagName === 'INPUT') { e.preventDefault(); renameTag(e.target.closest('[data-ti]')); }
+    });
+    $('#tagsFilter').addEventListener('input', () => {
+        const q = normalizeText($('#tagsFilter').value);
+        $('#tagsList').querySelectorAll('[data-ti]').forEach(row => row.classList.toggle('hidden', !!q && !normalizeText(tagsShown[+row.dataset.ti]).includes(q)));
+    });
+    $('#btnTags').addEventListener('click', openTags);
+    $('#tagsClose').addEventListener('click', closeTags);
+    tagsOverlay.addEventListener('click', e => { if (e.target === tagsOverlay) closeTags(); });
+
     /* ---------- Ordner verwalten ---------- */
     const foldersOverlay = $('#foldersOverlay');
+    // „Rückgängig“ für große Aktionen: holt den Stand zurück, den der Server direkt davor gesichert hat
+    function undoBackup(name, after) {
+        return async () => {
+            if (applyRes(await api('backup_restore', { name }), 'Zurückgeholt') && after) after();
+        };
+    }
     function renderFolders() {
         const cats = getCategories();
         const list = $('#foldersList');
@@ -6167,9 +6479,9 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
         list.innerHTML = cats.map(c => `
             <div class="flex items-center gap-1.5" data-folder="${escapeHtml(c)}">
                 <input type="text" class="field flex-1 min-w-0 !py-2 !text-sm" value="${escapeHtml(c)}" aria-label="Ordnername" maxlength="150">
-                <span class="text-[11px] text-slate-500 bg-slate-800/80 px-1.5 py-0.5 rounded shrink-0">${counts[c] || 0}</span>
-                <button type="button" class="card-btn card-btn-icon" data-fact="rename" title="Namen speichern" aria-label="Namen speichern">${SVG.check}</button>
-                <button type="button" class="card-btn card-btn-icon danger" data-fact="dissolve" title="Ordner auflösen" aria-label="Ordner auflösen" ${c === 'Allgemein' ? 'disabled style="opacity:.3;cursor:not-allowed"' : ''}>${SVG.trash}</button>
+                <span class="text-[11px] text-slate-500 bg-slate-800/80 px-1.5 py-0.5 rounded shrink-0" title="Links in diesem Ordner">${counts[c] || 0}</span>
+                <button type="button" class="btn btn-secondary lv-mini shrink-0" data-fact="rename">Speichern</button>
+                <button type="button" class="btn btn-danger lv-mini shrink-0" data-fact="delete" ${c === 'Allgemein' ? 'disabled title="„Allgemein“ ist der Standard-Ordner"' : ''}>Löschen</button>
             </div>`).join('');
     }
     async function renameFolder(row) {
@@ -6193,10 +6505,18 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
         if (!row || btn.disabled) return;
         if (btn.dataset.fact === 'rename') { renameFolder(row); return; }
         const old = row.dataset.folder;
-        if (!await confirmDialog({ title: 'Ordner auflösen?', text: `Die Links aus „${prettyCat(old)}“ bleiben erhalten und rutschen eine Ebene höher bzw. nach „Allgemein“.`, ok: 'Auflösen', danger: true })) return;
+        const n = live().filter(b => inCat(b.category, old)).length;
+        if (!await confirmDialog({
+            title: `Ordner „${prettyCat(old)}“ löschen?`,
+            text: `Nur der Ordner verschwindet. Die ${n} Link(s) darin bleiben erhalten und kommen nach „Allgemein“ (bei Unterordnern eine Ebene höher).`,
+            ok: 'Ordner löschen', danger: true })) return;
         const res = await api('delete_category', { category: old });
-        if (res.success) { bookmarks = res.bookmarks; render(); renderFolders(); showToast(res.message || 'Ordner aufgelöst'); }
-        else showToast(res.message || 'Fehler', 'error');
+        if (!res.success) { showToast(res.message || 'Fehler', 'error'); return; }
+        bookmarks = res.bookmarks;
+        render(); renderFolders();
+        showToast(res.message || 'Ordner gelöscht', 'success', res.backup ? { label: 'Rückgängig', fn: undoBackup(res.backup, () => {
+            if (!foldersOverlay.classList.contains('hidden')) renderFolders();
+        }) } : null);
     });
     $('#foldersList').addEventListener('keydown', e => {
         if (e.key === 'Enter' && e.target.tagName === 'INPUT') { e.preventDefault(); renameFolder(e.target.closest('[data-folder]')); }
@@ -6626,7 +6946,7 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
             // Regeln liegen über „Automatisch sortieren“: erst nur dieses Fenster schließen
             if (!rulesOverlay.classList.contains('hidden')) { closeRules(); return; }
             if (anyOverlayOpen()) {
-                closeModal(); closeImport(); closeMove(); closeDead(); closeFolders(); closeBackups(); closeAuto();
+                closeModal(); closeImport(); closeMove(); closeDead(); closeFolders(); closeBackups(); closeAuto(); closeTags();
                 closeBookmarklet(); closeAccount(); closeTrash(); closeLog(); closeUsers();
                 return;
             }
@@ -6820,8 +7140,7 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
     setTimeout(syncHeaderSpacer, 500);
 
     // Kategorieleiste: Mausrad horizontal, Drag-to-Scroll mit Nachlauf (Momentum)
-    (function setupCategoryScroll() {
-        const bar = categoryBar;
+    [categoryBar, tagBar].forEach(function setupCategoryScroll(bar) {
         if (!bar) return;
         bar.addEventListener('wheel', e => {
             if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && bar.scrollWidth > bar.clientWidth) {
@@ -6911,7 +7230,7 @@ $lvCsrfPage = LV_AUTH_ENABLED ? lvCsrfToken() : '';
         bar.addEventListener('click', e => {
             if (moved) { e.preventDefault(); e.stopPropagation(); moved = false; }
         }, true);
-    })();
+    });
 
     // Zweites Gerät hat etwas geändert? Beim Zurückkommen auf die Seite still nachladen
     document.addEventListener('visibilitychange', async () => {
@@ -7010,7 +7329,7 @@ function lvUiOptions(): array {
     'mode' => ['auto', 'light', 'dark'], 'light' => ['1', '2', '3'], 'dark' => ['1', '2', '3'], 'lang' => ['', 'de', 'en'],
     'view' => ['cards', 'list', 'compact'],
     'sort' => ['title', 'title-desc', 'newest', 'oldest', 'clicks', 'opened', 'domain', 'folder'],
-    'group' => ['domain', 'folder', 'none'], 'favtop' => ['1', '0'],
+    'group' => ['domain', 'folder', 'none'], 'favtop' => ['1', '0'], 'tagbar' => ['1', '0'],
     ];
 }
 
@@ -7056,7 +7375,7 @@ function lvUiHead(): void {
 (function () {
     var d = document.documentElement;
     // Reihenfolge wie in lvUiOptions() (PHP)
-    var KEYS = { mode: 'lv_mode', light: 'lv_light', dark: 'lv_dark', lang: 'lv_lang', view: 'lv_view', sort: 'lv_sort', group: 'lv_group', favtop: 'lv_favtop' };
+    var KEYS = { mode: 'lv_mode', light: 'lv_light', dark: 'lv_dark', lang: 'lv_lang', view: 'lv_view', sort: 'lv_sort', group: 'lv_group', favtop: 'lv_favtop', tagbar: 'lv_tagbar' };
     var mem = {};   // Ersatz, falls der Browser nichts speichern darf
     var get = function (k) {
         if (Object.prototype.hasOwnProperty.call(mem, k)) return mem[k];
@@ -7415,7 +7734,7 @@ function lvUiFoot(): void {
 
     /* ----- Einstellungen am Konto speichern (nur in der App, nicht auf der Anmeldeseite) ----- */
     var csrfEl = doc.getElementById('exportCsrf');
-    var DEF = { mode: 'auto', light: '1', dark: '1', lang: '', view: 'cards', sort: 'title', group: 'domain', favtop: '1' };
+    var DEF = { mode: 'auto', light: '1', dark: '1', lang: '', view: 'cards', sort: 'title', group: 'domain', favtop: '1', tagbar: '1' };
     var snap = function (src) {
         var o = {};
         for (var k in ui.keys) {
@@ -7627,37 +7946,63 @@ function lvUiFoot(): void {
         "Zuletzt geöffnet": "Recently opened", "Nach Domain": "By domain", "Nach Ordner": "By folder", "Favoriten immer oben": "Favorites always on top",
         "Gruppieren": "Group", "Domains mit vielen Links": "Domains with many links", "Nach Ordnern": "By folder", "Gar nicht": "No grouping",
         "Werkzeuge": "Tools", "Importieren": "Import", "Export als JSON": "Export as JSON", "Export als HTML (Browser)": "Export as HTML (browser)",
-        // Automatisch sortieren (3.4)
+        // Automatisch sortieren, Gruppen, Tags verwalten, Tag-Leiste (3.4)
         "Automatisch sortieren": "Auto-sort", "Übernehmen": "Apply", "Tag": "Tag", "Speichere…": "Saving…",
-        "Vorschläge nach Domain, Stichwörtern, deiner bisherigen Sortierung und deinen eigenen Regeln. Geändert wird erst, wenn du auf „Übernehmen“ tippst, vorher wird automatisch ein Backup angelegt.":
-            "Suggestions based on domain, keywords, how you have sorted so far and your own rules. Nothing changes until you tap “Apply”, and a backup is made automatically first.",
+        "Vorschläge nach Domain, Stichwörtern, deinen Gruppen und deiner bisherigen Sortierung. Geändert wird erst, wenn du auf „Übernehmen“ tippst, vorher wird automatisch ein Backup angelegt.":
+            "Suggestions based on domain, keywords, your groups and how you have sorted so far. Nothing changes until you tap “Apply”, and a backup is made automatically first.",
         "Tags vorschlagen (vorhandene Tags bleiben)": "Suggest tags (existing tags are kept)",
         "Ordner vorschlagen für unsortierte Links („Allgemein“)": "Suggest folders for unsorted links (“Allgemein”)",
         "Auch Links umsortieren, die schon in einem Ordner liegen": "Also re-sort links that are already in a folder",
-        "Eigene Regeln und Stichwörter": "Your own rules and keywords", "Eigene Regeln": "Your own rules",
-        "Kommt das Stichwort irgendwo in Adresse, Titel oder Beschreibung vor, gibt es die Tags und den Ordner. Groß- und Kleinschreibung ist egal. Steht ein Punkt drin (z. B. „meinebank.de“), zählt nur die Domain. Deine Regeln gehen immer vor.":
-            "If the keyword appears anywhere in the address, title or description, the link gets the tags and the folder. Upper and lower case do not matter. If it contains a dot (e.g. “mybank.com”), only the domain counts. Your rules always come first.",
-        "Stichwort oder Domain, z. B. xxx": "Keyword or domain, e.g. xxx", "Tags, z. B. nsfw": "Tags, e.g. nsfw",
-        "Ordner (freiwillig)": "Folder (optional)", "Eingebaute Gruppen": "Built-in groups",
-        "Bekannte Seiten und typische Stichwörter. Haken weg = Gruppe wird nicht benutzt. Tag und Ordner kannst du umbenennen, leerer Ordner = nur Tag.":
-            "Well-known sites and typical keywords. Untick = group is not used. You can rename the tag and the folder, empty folder = tag only.",
-        "Noch keine eigenen Regeln.": "No rules of your own yet.", "Regel löschen": "Delete rule",
-        "Keine Links zum Sortieren.": "No links to sort.", "Stichwort oder Domain eingeben": "Enter a keyword or domain",
-        "Mindestens einen Tag oder einen Ordner angeben": "Enter at least one tag or a folder", "Höchstens 300 Regeln": "300 rules at most",
-        "Eigene Regeln konnten nicht geladen werden": "Your own rules could not be loaded",
-        "Die Datei mit deinen Regeln ist nicht lesbar. Beim nächsten Speichern wird sie neu angelegt.": "The file with your rules cannot be read. It will be created anew the next time you save.",
-        "Regeln gespeichert.": "Rules saved.", "Nichts ausgewählt.": "Nothing selected.", "Zu viele Änderungen auf einmal.": "Too many changes at once.",
+        "Keine Links zum Sortieren.": "No links to sort.",
+        "Nichts ausgewählt.": "Nothing selected.", "Zu viele Änderungen auf einmal.": "Too many changes at once.",
         "Nichts geändert, war schon alles so.": "Nothing changed, it was all like that already.", "Sortiert": "Sorted", "Zurückgeholt": "Restored",
-        "vor automatischem Sortieren": "before auto-sort",
+        "vor automatischem Sortieren": "before auto-sort", "vor Tag-Änderung": "before tag change",
         "dein Tag steht im Titel oder in der Adresse": "your tag appears in the title or address",
         "Ordnername steht im Titel oder in der Adresse": "the folder name appears in the title or address",
+        "Gruppen und Stichwörter bearbeiten": "Edit groups and keywords", "Gruppen und Stichwörter": "Groups and keywords",
+        "Passt ein Eintrag einer Gruppe zum Link, schlägt sie ihre Tags und ihren Ordner vor. Alles lässt sich ändern, abschalten oder löschen.":
+            "If one of a group's entries matches a link, the group suggests its tags and its folder. Everything can be changed, switched off or deleted.",
+        "Neue Gruppe": "New group", "Standard wiederherstellen": "Restore defaults", "Standard wiederherstellen?": "Restore defaults?",
+        "Suchen: Name, Tag, Domain oder Stichwort": "Search: name, tag, domain or keyword", "Gruppen durchsuchen": "Search groups",
+        "So schreibst du Einträge": "How to write entries",
+        "= diese Domain samt Unterseiten": "= this domain including its subdomains",
+        "= jede Endung, also amazon.de, amazon.com usw.": "= any ending, so amazon.de, amazon.com and so on",
+        "= alle Domains mit dieser Endung": "= all domains with this ending",
+        "= ganzes Wort in Titel, Adresse oder Beschreibung": "= whole word in the title, address or description",
+        "= Wortanfang, also auch „programmieren“": "= start of a word, so “programming” matches too",
+        "= steht irgendwo, auch mitten im Wort": "= appears anywhere, even inside a word",
+        "Für den Ordner zählen Treffer über die Domain vor Stichwörtern. Sonst gewinnt die Gruppe weiter oben.":
+            "For the folder, domain matches count before keywords. Otherwise the group higher up wins.",
+        "Gruppe benutzen": "Use group", "Gruppe löschen": "Delete group", "Name": "Name", "Tags (mit Komma)": "Tags (comma separated)",
+        "z. B. video, musik": "e.g. video, music", "leer = keiner": "empty = none",
+        "Domains und Stichwörter (mit Komma oder je Zeile)": "Domains and keywords (comma separated or one per line)",
+        "Nach oben": "Move up", "Nach unten": "Move down", "1 Eintrag": "1 entry",
+        "Keine Gruppen. Leg eine neue an oder hol den Standard zurück.": "No groups. Create a new one or restore the defaults.",
+        "Höchstens 150 Gruppen": "150 groups at most", "Wiederherstellen": "Restore",
+        "Alle eingebauten Gruppen kommen in der Originalfassung zurück, auch gelöschte. Deine eigenen Gruppen bleiben. Übernommen wird es erst mit „Speichern“.":
+            "All built-in groups come back in their original form, deleted ones too. Your own groups are kept. It only takes effect once you tap “Save”.",
+        "Standard ist wieder da. Zum Übernehmen „Speichern“ antippen.": "The defaults are back. Tap “Save” to keep them.",
+        "Gruppen gespeichert.": "Groups saved.", "Keine Gruppen übergeben.": "No groups were sent.",
+        "Gruppen konnten nicht geladen werden": "The groups could not be loaded",
+        "Die Datei mit deinen Gruppen ist nicht lesbar, es gilt der Standard. Beim nächsten Speichern wird sie neu angelegt.":
+            "The file with your groups cannot be read, the defaults apply. It will be created anew the next time you save.",
         "Erwachsene (NSFW)": "Adult (NSFW)", "Technik & Computer": "Tech & computers", "Programmierung": "Programming",
         "Videos & Streaming": "Videos & streaming", "Musik": "Music", "Nachrichten": "News", "Social Media": "Social media",
         "Job & Karriere": "Jobs & career", "Kochen & Rezepte": "Cooking & recipes", "Reisen": "Travel", "Geld & Finanzen": "Money & finance",
-        "Ämter & Behörden": "Public authorities", "Wissen & Lernen": "Knowledge & learning", "Anleitungen (nur Tag)": "How-tos (tag only)",
+        "Ämter & Behörden": "Public authorities", "Wissen & Lernen": "Knowledge & learning", "Anleitungen": "How-tos",
         "Spiele & Gaming": "Games", "Sport & Fitness": "Sports & fitness", "Gesundheit": "Health", "Wohnen & Garten": "Home & garden",
-        "Auto & Verkehr": "Cars & traffic", "Wetter (nur Tag)": "Weather (tag only)", "Bücher": "Books",
+        "Auto & Verkehr": "Cars & traffic", "Wetter": "Weather", "Bücher": "Books",
         "Werkzeuge & Online-Dienste": "Tools & online services",
+        "Tag-Leiste anzeigen": "Show tag bar", "Tags verwalten": "Manage tags", "✕ Tag-Filter aus": "✕ Clear tag filter",
+        "Namen ändern und mit „Speichern“ oder Enter übernehmen. Heißt er dann wie ein anderer Tag, werden beide zusammengelegt. „Löschen“ nimmt den Tag von allen Links, die Links selbst bleiben.":
+            "Change a name and confirm with “Save” or Enter. If it then matches another tag, both are merged. “Delete” removes the tag from all links, the links themselves stay.",
+        "Tags durchsuchen": "Search tags", "Tag-Name": "Tag name", "Links mit diesem Tag": "Links with this tag", "Noch keine Tags.": "No tags yet.",
+        "Tags zusammenlegen?": "Merge tags?", "Tag löschen": "Delete tag",
+        "Tag fehlt.": "Tag is missing.", "Neuer Name fehlt.": "New name is missing.", "Tag nicht gefunden.": "Tag not found.",
+        "Namen ändern und mit „Speichern“ oder Enter übernehmen. „Löschen“ entfernt nur den Ordner, die Links darin bleiben und kommen nach „Allgemein“ (bei Unterordnern eine Ebene höher).":
+            "Change a name and confirm with “Save” or Enter. “Delete” only removes the folder, its links stay and move to “Allgemein” (one level up for subfolders).",
+        "Links in diesem Ordner": "Links in this folder", "„Allgemein“ ist der Standard-Ordner": "“Allgemein” is the default folder",
+        "Ordner löschen": "Delete folder", "Ordner gelöscht": "Folder deleted",
         "Duplikate entfernen": "Remove duplicates", "Tote Links prüfen": "Check for dead links", "Ordner verwalten": "Manage folders",
         "Papierkorb": "Trash", "Schnell speichern / App": "Quick save / app", "Neu laden": "Reload",
         "Konto & Sicherheit": "Account & security", "Anmeldeversuche": "Sign-in attempts", "Benutzer verwalten": "Manage users",
@@ -8005,8 +8350,19 @@ function lvUiFoot(): void {
         }],
         [/^Die Liste zeigt die ersten (\d+)\. Übernommen werden alle (\d+), die Schalter oben gelten für alle\.$/,
             'The list shows the first $1. All $2 will be applied, the switches at the top apply to all of them.'],
-        [/^Regel „([^“]+)“$/, 'rule “$1”'], [/^Stichwort „([^“]+)“$/, 'keyword “$1”'],
-        [/^Domain ([^\s·]+)$/, 'domain $1'], [/^wie deine anderen Links von ([^\s·]+)$/, 'like your other links from $1'],
+        [/^Stichwort „([^“]+)“ \(([^·]+)\)$/, function (m) { return 'keyword “' + m[1] + '” (' + sub(m[2]) + ')'; }],
+        [/^Domain ([^\s·]+) \(([^·]+)\)$/, function (m) { return 'domain ' + m[1] + ' (' + sub(m[2]) + ')'; }],
+        [/^wie deine anderen Links von ([^\s·]+)$/, 'like your other links from $1'],
+        [/^Gruppe „(.+)“ gelöscht$/, 'Group “$1” deleted'],
+        [/^Ordner „(.+)“ löschen\?$/, 'Delete folder “$1”?'],
+        [/^Nur der Ordner verschwindet\. Die (\d+) Link\(s\) darin bleiben erhalten und kommen nach „Allgemein“ \(bei Unterordnern eine Ebene höher\)\.$/,
+            'Only the folder disappears. Its $1 link(s) are kept and move to “Allgemein” (one level up for subfolders).'],
+        [/^Ordner gelöscht, (\d+) Link\(s\) liegen jetzt in „(.+)“\.$/, 'Folder deleted, $1 link(s) are now in “$2”.'],
+        [/^„#(.+)“ gibt es schon\. Alle Links mit „#(.+)“ bekommen stattdessen „#(.+)“\.$/, '“#$1” already exists. All links tagged “#$2” get “#$3” instead.'],
+        [/^Tag „#(.+)“ löschen\?$/, 'Delete tag “#$1”?'],
+        [/^Er verschwindet von (\d+) Link\(s\)\. Die Links selbst bleiben\.$/, 'It is removed from $1 link(s). The links themselves stay.'],
+        [/^Tag „(.+)“ bei (\d+) Link\(s\) entfernt\.$/, 'Tag “$1” removed from $2 link(s).'],
+        [/^Tag „(.+)“ heißt jetzt „(.+)“ \((\d+) Links\)\.$/, 'Tag “$1” is now called “$2” ($3 links).'],
         [/^(\d+) Link\(s\) sortiert: (\d+) mit neuen Tags, (\d+) in andere Ordner\.$/, '$1 link(s) sorted: $2 with new tags, $3 moved to other folders.'],
         [/^(.+) Uhr$/, '$1']
     ];
@@ -8047,7 +8403,9 @@ function lvUiFoot(): void {
     // Stellen mit eigenen Inhalten (Titel, Ordner, Schlagwörter, Namen) bleiben unangetastet
     var KEEP = 'script,style,textarea,datalist,.bm-title,.bm-domain,.bm-desc,.bm-tag,.user-note,.mono-box,#importFileName,#formCatLabel,'
         + '[data-movecat],.domain-group-header .truncate,#deadList .truncate,[data-lang],.as-keep';
-    var SPECIAL = { all: 1, favorites: 1, dead: 1 };
+    var SPECIAL = { all: 1, favorites: 1, dead: 1, __tagmanage: 1, __tagoff: 1 };
+    // Namen der Standard-Gruppen beim Anlegen gleich auf Englisch (siehe asDefaultGroups)
+    ui.tr = function (s) { var t = tr(String(s)); return t === null ? s : t; };
     function keep(el) {
         if (!el || el.closest(KEEP)) return true;
         var c = el.closest('.bm-chip');
@@ -8110,62 +8468,90 @@ LVJS;
    Neu in 3.4: Automatisch sortieren
    ---------------------------------------------------------------------
    Ohne KI und ohne fremde Dienste. Die Vorschläge rechnet der Browser
-   aus (Domain-Liste, Stichwörter, deine bisherige Sortierung, deine
-   eigenen Regeln). Hier liegen nur die eigenen Regeln: pro Benutzer
-   eine Datei autosort.json, verschlüsselt wie die Links selbst.
+   aus (Gruppen mit Domains und Stichwörtern, deine bisherige Sortierung).
+   Hier liegt nur deine Fassung der Gruppen: pro Benutzer eine Datei
+   autosort.json, verschlüsselt wie die Links selbst. Gibt es die Datei
+   nicht, nimmt der Browser die eingebauten Gruppen.
    ===================================================================== */
 
 function lvAutoSortFile(): string { return lvUserDir() . '/autosort.json'; }
 
-/** Lässt nur saubere Regeln durch. rules: [{m, t[], f}], cats: {id: {on, t, f}} (Änderungen an den eingebauten Gruppen) */
-function lvAutoSortClean($in): array {
-    $rules = [];
-    $seen = [];
-    $list = (is_array($in) && isset($in['rules']) && is_array($in['rules'])) ? $in['rules'] : [];
-    foreach ($list as $r) {
-        if (!is_array($r)) continue;
-        $m = cleanText($r['m'] ?? '', 100);
-        $m = function_exists('mb_strtolower') ? mb_strtolower($m, 'UTF-8') : strtolower($m);
-        if ($m === '') continue;
-        $tags = array_slice(cleanTags($r['t'] ?? []), 0, 5);
-        $f = trim((string)($r['f'] ?? ''));
+/** Ein Eintrag einer Gruppe: Domain, Wort, „wort*“, „*wortteil*“ … klein geschrieben, ohne Steuerzeichen */
+function lvAutoSortEntry($e): string {
+    if (!is_string($e) && !is_numeric($e)) return '';
+    $e = cleanText((string)$e, 120);
+    $e = function_exists('mb_strtolower') ? mb_strtolower($e, 'UTF-8') : strtolower($e);
+    return trim(preg_replace('/\s+/u', ' ', $e) ?? $e);
+}
+
+/**
+ * Seit 3.4: eine gemeinsame Liste von Gruppen, die du komplett bearbeiten kannst.
+ * Gruppe: id (nur bei eingebauten, zum Wiedererkennen), n Name, on an/aus, t Tags, f Ordner, e Einträge.
+ */
+function lvAutoSortCleanGroups($list): array {
+    $out = [];
+    if (!is_array($list)) return $out;
+    foreach ($list as $g) {
+        if (!is_array($g)) continue;
+        $id = (string)($g['id'] ?? '');
+        if (!preg_match('/^[a-z]{2,20}$/', $id)) $id = '';
+        $name = cleanText($g['n'] ?? '', 60);
+        if ($name === '') $name = 'Gruppe';
+        $f = trim((string)($g['f'] ?? ''));
         $f = $f === '' ? '' : cleanCategory($f);
         if ($f === 'Allgemein') $f = '';
-        if (!$tags && $f === '') continue;
-        $key = $m . "\n" . implode(',', $tags) . "\n" . $f;
-        if (isset($seen[$key])) continue;
-        $seen[$key] = true;
-        $rules[] = ['m' => $m, 't' => $tags, 'f' => $f];
-        if (count($rules) >= 300) break;
+        $entries = [];
+        $seen = [];
+        foreach ((is_array($g['e'] ?? null) ? $g['e'] : []) as $e) {
+            $e = lvAutoSortEntry($e);
+            if ($e === '' || isset($seen[$e])) continue;
+            $seen[$e] = true;
+            $entries[] = $e;
+            if (count($entries) >= 500) break;
+        }
+        $out[] = ['id' => $id, 'n' => $name, 'on' => !empty($g['on']), 't' => array_slice(cleanTags($g['t'] ?? []), 0, 5), 'f' => $f, 'e' => $entries];
+        if (count($out) >= 150) break;
+    }
+    return $out;
+}
+
+/**
+ * groups = null: noch nie gespeichert, der Browser nimmt den Standard.
+ * legacy: Regeln aus der ersten Fassung von heute (eigene Regeln + Änderungen an den eingebauten Gruppen),
+ * der Browser baut daraus die neue Liste. broken = Datei da, aber nicht lesbar.
+ */
+function lvAutoSortLoad(): array {
+    $file = lvAutoSortFile();
+    if (!is_file($file)) return ['groups' => null, 'legacy' => null, 'broken' => false];
+    $json = lvDecodeStored((string)@file_get_contents($file));
+    $data = $json !== null ? json_decode($json, true) : null;
+    if (!is_array($data)) return ['groups' => null, 'legacy' => null, 'broken' => true];
+    if (isset($data['groups']) && is_array($data['groups'])) {
+        return ['groups' => lvAutoSortCleanGroups($data['groups']), 'legacy' => null, 'broken' => false];
+    }
+    // Altes Format: {rules: [{m, t, f}], cats: {id: {on, t, f}}}
+    $rules = [];
+    foreach ((is_array($data['rules'] ?? null) ? $data['rules'] : []) as $r) {
+        if (!is_array($r)) continue;
+        $m = lvAutoSortEntry($r['m'] ?? '');
+        if ($m === '') continue;
+        $f = trim((string)($r['f'] ?? ''));
+        $rules[] = ['m' => $m, 't' => array_slice(cleanTags($r['t'] ?? []), 0, 5), 'f' => $f === '' ? '' : cleanCategory($f)];
     }
     $cats = [];
-    $list = (is_array($in) && isset($in['cats']) && is_array($in['cats'])) ? $in['cats'] : [];
-    foreach ($list as $id => $c) {
+    foreach ((is_array($data['cats'] ?? null) ? $data['cats'] : []) as $id => $c) {
         if (!is_string($id) || !preg_match('/^[a-z]{2,20}$/', $id) || !is_array($c)) continue;
         $t = cleanTags([(string)($c['t'] ?? '')]);
         $f = trim((string)($c['f'] ?? ''));
-        $f = $f === '' ? '' : cleanCategory($f);
-        if ($f === 'Allgemein') $f = '';
-        $cats[$id] = ['on' => !empty($c['on']), 't' => $t ? $t[0] : '', 'f' => $f];
-        if (count($cats) >= 60) break;
+        $cats[$id] = ['on' => !empty($c['on']), 't' => $t ? $t[0] : '', 'f' => $f === '' ? '' : cleanCategory($f)];
     }
-    return ['rules' => $rules, 'cats' => (object)$cats];
+    return ['groups' => null, 'legacy' => ['rules' => $rules, 'cats' => (object)$cats], 'broken' => false];
 }
 
-/** @return array{rules: array, cats: object, broken: bool} broken = Datei da, aber nicht lesbar */
-function lvAutoSortLoad(): array {
-    $file = lvAutoSortFile();
-    if (!is_file($file)) return ['rules' => [], 'cats' => (object)[], 'broken' => false];
-    $json = lvDecodeStored((string)@file_get_contents($file));
-    $data = $json !== null ? json_decode($json, true) : null;
-    if (!is_array($data)) return ['rules' => [], 'cats' => (object)[], 'broken' => true];
-    return lvAutoSortClean($data) + ['broken' => false];
-}
-
-function lvAutoSortSave(array $rs): bool {
+function lvAutoSortSave(array $groups): bool {
     $dir = lvUserDir();
     if (!is_dir($dir) || !is_writable($dir)) return false;
-    $json = json_encode(['v' => 1, 'rules' => $rs['rules'], 'cats' => $rs['cats']], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    $json = json_encode(['v' => 2, 'groups' => $groups], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($json === false) return false;
     $payload = lvEncryptPayload($json);
     $file = lvAutoSortFile();
