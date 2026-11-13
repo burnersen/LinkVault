@@ -67,11 +67,13 @@ In multi-select mode `Space` selects the entry, `Shift` + arrow key selects whil
 LinkVault writes `.htaccess` files that block all access to `data/`. That works on Apache if `AllowOverride` is enabled. Nginx ignores `.htaccess`, so add this to your `server { }` block (the same snippet is written to `data/nginx-deny.conf`):
 
 ```nginx
-location ^~ /data/ {
+location ^~ /linkvault/data/ {
     deny all;
     return 404;
 }
 ```
+
+The path has to match the folder LinkVault lives in, `/linkvault/` in this example. If it sits directly in the web root, use `location ^~ /data/ {`. If the path is wrong, the rule never matches and `data/` is open. LinkVault writes the matching path into `data/nginx-deny.conf` for you.
 
 Test it. This must **not** return 200:
 
