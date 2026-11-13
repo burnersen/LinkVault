@@ -43,7 +43,10 @@ jobs:
           echo "TAG=$TAG" >> "$GITHUB_ENV"
           # Gibt es den Tag schon, wird genau dieser Stand gebaut
           git fetch --tags --quiet
-          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then git checkout --quiet "refs/tags/$TAG"; fi
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            git checkout --quiet "refs/tags/$TAG"
+            echo "TAG_EXISTS=1" >> "$GITHUB_ENV"
+          fi
       - name: Dateien bauen
         run: php tools/build-release.php
       - name: Release anlegen oder ergänzen
@@ -53,6 +56,8 @@ jobs:
           NAME="${TAG#v}"; NAME="LinkVault ${NAME#LinkVault-}"
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/linkvault-install.php dist/linkvault-*.zip --clobber
+          elif [ -n "$TAG_EXISTS" ]; then
+            gh release create "$TAG" dist/linkvault-install.php dist/linkvault-*.zip --title "$NAME" --generate-notes --verify-tag
           else
-            gh release create "$TAG" dist/linkvault-install.php dist/linkvault-*.zip --title "$NAME" --generate-notes --target "$(git rev-parse HEAD)"
+            gh release create "$TAG" dist/linkvault-install.php dist/linkvault-*.zip --title "$NAME" --generate-notes --target "$GITHUB_SHA"
           fi
