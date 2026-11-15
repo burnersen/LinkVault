@@ -6,6 +6,8 @@ Eine Lesezeichen-Verwaltung zum Selbsthosten in **reinem PHP**, installiert mit 
 
 **English version: [README.en.md](README.en.md)**
 
+**[🌐 Webseite](https://tech.burnersen.de/tools/linkvault/)** · <sub>🇬🇧 In English: [tech.burnersen.de/en/tools/linkvault-en](https://tech.burnersen.de/en/tools/linkvault-en/)</sub>
+
 ![LinkVault mit Beispieleinträgen](docs/screenshot.png)
 
 *Beispieldaten, erfunden für den Screenshot.*

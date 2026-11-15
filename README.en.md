@@ -8,6 +8,8 @@ Upload `linkvault-install.php`, open it in the browser, create the first account
 
 **Deutsche Fassung: [README.md](README.md)**
 
+**[🌐 Website](https://tech.burnersen.de/en/tools/linkvault-en/)** · <sub>🇩🇪 Auf Deutsch: [tech.burnersen.de/tools/linkvault](https://tech.burnersen.de/tools/linkvault/)</sub>
+
 ![LinkVault with sample entries](docs/screenshot.png)
 
 *Sample data, made up for the screenshot.*
